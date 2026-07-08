@@ -39,11 +39,13 @@ detect_own() {
   local pid=$$ comm args
   for _ in 1 2 3 4 5 6 7 8; do
     comm=$(ps -o comm= -p "$pid" 2>/dev/null) || break
-    case "$(basename "$comm")" in
+    comm_base=${comm##*/}
+    case "$comm_base" in
       *claude*) echo claude; return ;;
       *codex*) echo codex; return ;;
       *opencode*) echo opencode; return ;;
       *grok*) echo grok; return ;;
+      *hermes*) echo hermes; return ;;
       pi) echo pi; return ;;
       node*|python*)
         # Bare interpreter: match the harness name in its script path.
@@ -53,6 +55,7 @@ detect_own() {
           *codex*) echo codex; return ;;
           *opencode*) echo opencode; return ;;
           *grok*) echo grok; return ;;
+          *hermes*) echo hermes; return ;;
           *" pi "*|*/pi) echo pi; return ;;
         esac ;;
     esac

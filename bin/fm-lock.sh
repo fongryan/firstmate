@@ -15,14 +15,15 @@ LOCK="$STATE/.lock"
 mkdir -p "$STATE"
 
 # Known harness command names; extend when a new adapter is verified.
-HARNESS_RE='claude|codex|opencode|grok|^pi$'
+HARNESS_RE='claude|codex|opencode|grok|hermes|^pi$'
 
 harness_pid() {
-  local pid=$$ comm args
+  local pid=$$ comm comm_base args
   for _ in 1 2 3 4 5 6 7 8; do
     comm=$(ps -o comm= -p "$pid" 2>/dev/null) || return 1
     args=$(ps -o args= -p "$pid" 2>/dev/null)
-    if printf '%s' "$(basename "$comm")" | grep -qE "$HARNESS_RE"; then
+    comm_base=${comm##*/}
+    if printf '%s' "$comm_base" | grep -qE "$HARNESS_RE"; then
       echo "$pid"; return 0
     fi
     # Bare interpreter (e.g. node): match the harness name in its script path.
@@ -36,10 +37,11 @@ harness_pid() {
 }
 
 holder_alive() {  # true if $1 is a live process that looks like a harness
-  local pid=$1 comm
+  local pid=$1 comm comm_base
   kill -0 "$pid" 2>/dev/null || return 1
   comm=$(ps -o comm= -p "$pid" 2>/dev/null) || return 1
-  printf '%s' "$(basename "$comm") $(ps -o args= -p "$pid" 2>/dev/null)" | grep -qE "$HARNESS_RE"
+  comm_base=${comm##*/}
+  printf '%s' "$comm_base $(ps -o args= -p "$pid" 2>/dev/null)" | grep -qE "$HARNESS_RE"
 }
 
 if [ "${1:-}" = "status" ]; then
