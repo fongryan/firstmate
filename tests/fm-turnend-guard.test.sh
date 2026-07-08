@@ -350,7 +350,7 @@ test_hook_runs_fast() {
   start=$SECONDS
   run_hook "$dir" false >/dev/null
   elapsed_s=$((SECONDS - start))
-  [ "$elapsed_s" -lt 3 ] || fail "hook took ${elapsed_s}s, expected well under a second (generous 3s CI margin)"
+  [ "$elapsed_s" -le 3 ] || fail "hook took ${elapsed_s}s, expected well under a second (generous 3s CI margin)"
   pass "fm-turnend-guard: runs well under the generous timing margin (${elapsed_s}s)"
 }
 

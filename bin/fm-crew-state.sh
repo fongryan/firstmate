@@ -15,7 +15,7 @@
 # fixed mapping logic, no heuristics and no LLM. Output is one stable, parseable,
 # token-tight line firstmate can read every heartbeat:
 #
-#   state: <working|parked|done|blocked|failed|unknown> · source: <run-step|pane|status-log|none> · <detail>
+#   state: <working|idle|parked|done|blocked|failed|unknown> · source: <run-step|pane|status-log|none> · <detail>
 #
 # Logic, in order:
 #   1. Resolve worktree + backend target + kind from state/<id>.meta.
@@ -560,4 +560,4 @@ if [ -n "$LOG_VERB" ]; then
   emit "$(map_log_state "$LOG_VERB")" status-log "$(log_note_of "$LOG_LINE")"
 fi
 
-emit unknown none "no current-state source available"
+emit idle pane "backend target readable and no active run, busy signal, or status event"

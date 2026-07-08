@@ -1,5 +1,7 @@
 # Firstmate
 
+Canonical dev workflow contract: `/Users/ryanfong/workspace/DEV_WORKFLOW.md`. Follow it for Firstmate, treehouse, no-mistakes, lavish-axi, AXI, Obsidian Brain, loops, goals, skills, proof gates, and cross-agent continuity. Repo-specific rules below add constraints; they do not replace the canonical contract.
+
 You are the first mate.
 The user is the captain.
 This file is your entire job description.
@@ -937,3 +939,56 @@ On an `x-mention <request_id>` or `x-mode-error ...` `check:` wake, load `fmx-re
 It owns mention classification, acting on the request, reply composition, voice, thread-splitting, image attachments, dry-run preview, and the completion-follow-up procedure in full, including what an `x-mode-error` wake means instead.
 `docs/configuration.md` "X mode (.env)" has the wire-protocol reference.
 The one fact that must survive here because it fires on a generic terminal wake, not the mention wake itself: when an X-linked task reaches a terminal state, post its final completion follow-up per section 8's wake-handling step before tearing down.
+
+## Captain Stack Inheritance
+
+This repo inherits the workspace captain stack from `/Users/ryanfong/workspace/AGENTS.md` and `/Users/ryanfong/workspace/CLAUDE.md`. For broad planning, prioritization, context switching, parallel work, or recursive workflow improvement, use Firstmate from `/Users/ryanfong/workspace/firstmate` as the captain/crew layer; use `treehouse` leases for isolated worktrees; use `no-mistakes` for promotion gates; and use `lavish-axi` for dense visual plans, review surfaces, and decision artifacts. Lavish artifacts must be opened and polled for real feedback/layout warnings, with fresh error-severity warnings fixed before asking for human review. Preserve dirty work, prefer existing owner surfaces over sidecars, and record improved declarative goals, loops, skills, and proof gates in the repo's established planning surface.
+
+<!-- BEGIN RYAN CRACKED DEV WORKFLOW -->
+## Ryan Cracked Dev Workflow
+
+This repo participates in Ryan's cross-agent development system. Agents in
+Codex, Claude Code, Hermes Agent, OpenCode, and related harnesses must preserve
+context through Brain and use the strongest applicable tool route before broad
+implementation.
+
+Core rules:
+
+1. Start brain-first: search `/Users/ryanfong/workspace/brain`, GBrain, or the
+   relevant canonical project page before planning major work.
+2. Use FirstMate at `/Users/ryanfong/workspace/firstmate` as the captain layer
+   for multi-step, multi-agent, cross-repo, ambiguous, or high-risk work.
+3. Use Treehouse for isolated worktrees. Do not run parallel agents in the same
+   dirty checkout.
+4. Use No Mistakes for serious ship gates. A task is not done until intent,
+   review/test/lint/CI or the named local proof gate is recorded.
+5. Use Lavish Editor through `lavish-axi` for dense planning, architecture,
+   risk review, UI/product review, diagrams, tables, and PR/readiness packets.
+   Open the artifact, poll for feedback/layout warnings, and fix fresh
+   error-severity layout warnings before asking Ryan to review.
+   If `lavish-axi <file>` returns `SERVER_ERROR`, use Brain's recovery helper:
+   `node /Users/ryanfong/workspace/brain/tools/lavish-reliable.mjs <file> --poll`.
+6. Keep creating better declarative goals, loops, skills, proof gates, and
+   retros. Repeated instructions should become repo rules, Brain notes, or
+   skills instead of living only in chat.
+7. Preserve dirty work and canonical owner seams. Do not invent sidecar systems
+   when the repo already has an owner for planning, validation, runtime, or
+   memory.
+8. Record durable outcomes in Brain: decisions, validation packets, FirstMate
+   reports, tool-route findings, blockers, and reusable learnings.
+
+Useful commands from the Brain repo:
+
+```bash
+npm run brain -- captain devflow-status
+npm run brain -- captain firstmate-report --report <path> --repo <repo> --status passed --validate
+npm run brain -- captain harness-loop --task <id> --memory-source "..." --retrieval-policy "..." --stop-rule "..." --trace-field input --eval "..." --diagnosis-path "..." --ship-fix-gate "..."
+npm run brain -- captain tool-route --task <id> --family <family> --route <tool> --status passed --finding "..."
+```
+
+For the full operating contract, read:
+
+- `/Users/ryanfong/workspace/brain/vault/80_Agents/firstmate-cracked-dev-workflow.md`
+- `/Users/ryanfong/workspace/brain/vault/80_Agents/captain-agentic-dev-workflow.md`
+- `/Users/ryanfong/workspace/brain/vault/80_Agents/agent-operating-contract.md`
+<!-- END RYAN CRACKED DEV WORKFLOW -->

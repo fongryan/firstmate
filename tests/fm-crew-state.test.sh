@@ -871,6 +871,34 @@ test_no_run_idle_pane_uses_log() {
   pass "no run + idle pane uses the status-log verb"
 }
 
+test_no_run_idle_pane_without_log_reports_idle() {
+  reset_fakes
+  local d; d=$(new_case idle-no-log)
+  make_repo_on_branch "$d/wt" fm/feat-idle-no-log
+  make_fakebin "$d" >/dev/null
+  fm_write_meta "$d/state/feat-idle-no-log.meta" "window=fm:fm-feat-idle-no-log" "worktree=$d/wt" "kind=ship"
+  FM_FAKE_AXI_STATUS=""
+  FM_FAKE_BUSY=0
+  local out; out=$(run_crew_state "$d" feat-idle-no-log)
+  assert_contains "$out" "state: idle" "readable idle pane with no log -> idle"
+  assert_contains "$out" "source: pane" "idle pane without log should be pane-sourced"
+  pass "no run + idle pane + no status log reports idle"
+}
+
+test_secondmate_idle_without_status_log_reports_idle() {
+  reset_fakes
+  local d; d=$(new_case secondmate-idle)
+  make_repo_on_branch "$d/wt" fm/domain-sm
+  make_fakebin "$d" >/dev/null
+  fm_write_meta "$d/state/domain-sm.meta" "window=fm:fm-domain-sm" "worktree=$d/wt" "kind=secondmate" "home=$d/wt"
+  FM_FAKE_AXI_STATUS=""
+  FM_FAKE_BUSY=0
+  local out; out=$(run_crew_state "$d" domain-sm)
+  assert_contains "$out" "state: idle" "idle secondmate with no status log -> idle"
+  assert_contains "$out" "source: pane" "idle secondmate should be pane-sourced"
+  pass "secondmate with readable idle pane and no status log reports idle"
+}
+
 test_dead_window_ignores_stale_status_log() {
   reset_fakes
   local d; d=$(new_case dead-window)
@@ -1077,6 +1105,8 @@ test_no_run_herdr_unknown_uses_backend_capture
 test_no_run_herdr_idle_agent_status_corroborated_by_busy_pane
 test_no_run_herdr_idle_agent_status_and_idle_pane_stays_idle
 test_no_run_idle_pane_uses_log
+test_no_run_idle_pane_without_log_reports_idle
+test_secondmate_idle_without_status_log_reports_idle
 test_dead_window_ignores_stale_status_log
 test_dead_window_still_reports_terminal_run_step
 test_dead_window_still_reports_active_run_step
