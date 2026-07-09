@@ -1014,6 +1014,10 @@ fi
 # Export GOTMPDIR into the crewmate's pane shell so the agent and every child
 # process (go build, go test, ...) inherit it. Sent before the launch command so
 # the env is set when the agent starts; the brief sleep lets the export land.
+if [ -n "${FM_AUTOPILOT_LOCK_OWNER_PID:-}" ]; then
+  sq_autopilot_owner=$(shell_quote "$FM_AUTOPILOT_LOCK_OWNER_PID")
+  spawn_send_text_line "$T" "export FM_AUTOPILOT_LOCK_OWNER_PID=$sq_autopilot_owner"
+fi
 spawn_send_text_line "$T" "export GOTMPDIR=$TASK_TMP/gotmp"
 sleep 0.3
 spawn_send_literal "$T" "$LAUNCH"

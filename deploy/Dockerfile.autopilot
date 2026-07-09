@@ -1,0 +1,109 @@
+# Dockerfile.autopilot — Firstmate headless captain loop (fm-autopilot) for ECS Fargate.
+#
+# Builds an image that runs bin/fm-autopilot.sh as a never-stopping software
+# factory: it drains wakes, merges proven-green +yolo work, dispatches the next
+# backlog items to crewmates, and refills the queue — 24/7, with the laptop off.
+#
+# The image carries the firstmate CODE (bin/, docs/, skills/, AGENTS.md, ...) but
+# NOT any local operational state: data/, state/, config/, projects/, and .env are
+# gitignored and are never COPYed here. The runtime FM_HOME, project clones, and
+# harness credentials are all materialized at boot by entrypoint.sh from origin +
+# Secrets Manager, so the cloud home is fully separate from the laptop home.
+#
+# Build context is the firstmate repo root:
+#   docker build -f deploy/Dockerfile.autopilot --platform linux/arm64 -t armalo/fm-autopilot .
+#
+# Target platform is linux/arm64 to match the armalo-admin-swarm / armalo-engine
+# Fargate ARM64 precedent (cheaper, same cluster). TARGETARCH is honored so an
+# amd64 build also works.
+
+FROM node:22-bookworm-slim
+
+# TARGETARCH is provided by BuildKit (arm64 | amd64). Map to the vendor arch
+# strings AWS CLI expects.
+ARG TARGETARCH=arm64
+
+# Pinned tool versions (bump deliberately; see deploy/README.md).
+ARG CLAUDE_CODE_VERSION=2.1.205
+ARG CODEX_VERSION=0.144.0
+ARG OPENCODE_VERSION=1.17.17
+ARG TASKS_AXI_VERSION=0.2.0
+
+ENV DEBIAN_FRONTEND=noninteractive \
+    HOME=/root \
+    FM_HOME=/var/fm/home \
+    FM_ROOT=/opt/firstmate \
+    PATH=/root/.local/bin:/usr/local/bin:/usr/bin:/bin
+
+# --- OS packages -------------------------------------------------------------
+# bash, git, tmux (crewmate session backend), jq, ripgrep, curl/ca-certificates
+# (clones + installers), unzip (aws cli), procps (ps for liveness), openssl,
+# less/nano (harness niceties), gnupg (gh apt key).
+RUN apt-get update \
+ && apt-get install -y --no-install-recommends \
+      bash git tmux jq ripgrep curl ca-certificates unzip procps \
+      openssl less gnupg tini \
+ && rm -rf /var/lib/apt/lists/*
+
+# --- GitHub CLI (official apt repo; arch-correct) ----------------------------
+RUN mkdir -p -m 755 /etc/apt/keyrings \
+ && curl -fsSL https://cli.github.com/packages/githubcli-archive-keyring.gpg \
+      -o /etc/apt/keyrings/githubcli-archive-keyring.gpg \
+ && chmod go+r /etc/apt/keyrings/githubcli-archive-keyring.gpg \
+ && echo "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/githubcli-archive-keyring.gpg] https://cli.github.com/packages stable main" \
+      > /etc/apt/sources.list.d/github-cli.list \
+ && apt-get update \
+ && apt-get install -y --no-install-recommends gh \
+ && rm -rf /var/lib/apt/lists/*
+
+# --- AWS CLI v2 (arch-correct) -----------------------------------------------
+RUN case "${TARGETARCH}" in \
+      arm64) AWS_ARCH=aarch64 ;; \
+      amd64) AWS_ARCH=x86_64 ;; \
+      *)     AWS_ARCH=aarch64 ;; \
+    esac \
+ && curl -fsSL "https://awscli.amazonaws.com/awscli-exe-linux-${AWS_ARCH}.zip" -o /tmp/awscliv2.zip \
+ && unzip -q /tmp/awscliv2.zip -d /tmp \
+ && /tmp/aws/install \
+ && rm -rf /tmp/aws /tmp/awscliv2.zip
+
+# --- Agent harness CLIs (npm globals) ----------------------------------------
+# claude-code + codex use OAuth creds materialized at boot (Ryan's rule: OAuth,
+# not API keys). opencode + tasks-axi round out the crew + backlog tooling.
+RUN npm install -g \
+      @anthropic-ai/claude-code@${CLAUDE_CODE_VERSION} \
+      @openai/codex@${CODEX_VERSION} \
+      opencode-ai@${OPENCODE_VERSION} \
+      tasks-axi@${TASKS_AXI_VERSION} \
+ && npm cache clean --force
+
+# --- Captain-stack binaries (treehouse worktrees, no-mistakes gate) ----------
+# treehouse and no-mistakes live in PRIVATE GitHub repos, so their release
+# assets need an authenticated download. The build has no token; entrypoint.sh
+# installs them at boot with `gh` once GH_TOKEN is materialized (see
+# install_captain_binaries there). Crewmates take treehouse leases and ship
+# through the no-mistakes gate, so both land on PATH before the loop starts.
+
+# --- Firstmate code (tracked material only; NO local state) ------------------
+# Explicit COPYs so local data/, state/, config/, projects/, .env can never be
+# baked into the image even without a root .dockerignore.
+WORKDIR /opt/firstmate
+COPY bin/            /opt/firstmate/bin/
+COPY docs/           /opt/firstmate/docs/
+COPY skills/         /opt/firstmate/skills/
+COPY .agents/        /opt/firstmate/.agents/
+COPY .github/        /opt/firstmate/.github/
+COPY assets/         /opt/firstmate/assets/
+COPY tests/          /opt/firstmate/tests/
+COPY AGENTS.md CLAUDE.md CONTRIBUTING.md README.md LICENSE \
+     .tasks.toml .no-mistakes.yaml treehouse.toml \
+     /opt/firstmate/
+COPY deploy/         /opt/firstmate/deploy/
+
+RUN chmod +x /opt/firstmate/bin/*.sh /opt/firstmate/deploy/*.sh 2>/dev/null || true
+
+# Runtime home, project clones, and harness cred dirs (populated at boot).
+RUN mkdir -p /var/fm/home /root/.claude /root/.codex /root/.config/gh
+
+# tini as PID 1 for correct signal + zombie handling around the loop.
+ENTRYPOINT ["/usr/bin/tini", "--", "/opt/firstmate/deploy/entrypoint.sh"]

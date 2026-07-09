@@ -1,0 +1,60 @@
+{
+  "family": "fm-autopilot",
+  "networkMode": "awsvpc",
+  "requiresCompatibilities": ["FARGATE"],
+  "cpu": "1024",
+  "memory": "4096",
+  "executionRoleArn": "__EXECUTION_ROLE_ARN__",
+  "taskRoleArn": "__TASK_ROLE_ARN__",
+  "runtimePlatform": {
+    "cpuArchitecture": "ARM64",
+    "operatingSystemFamily": "LINUX"
+  },
+  "containerDefinitions": [
+    {
+      "name": "fm-autopilot",
+      "image": "__IMAGE_URI__",
+      "essential": true,
+      "stopTimeout": 120,
+      "environment": [
+        { "name": "FM_HOME", "value": "/var/fm/home" },
+        { "name": "FM_ROOT", "value": "/opt/firstmate" },
+        { "name": "AWS_REGION", "value": "__REGION__" },
+        { "name": "FM_BACKEND", "value": "tmux" },
+        { "name": "FM_CREW_HARNESS", "value": "claude" },
+        { "name": "FM_AUTOPILOT_BRAIN", "value": "claude" },
+        { "name": "FM_AUTOPILOT_ARMED", "value": "1" },
+        { "name": "FM_AUTOPILOT_ARM_NOTE", "value": "cloud autopilot (ECS) armed at boot" },
+        { "name": "FM_AUTOPILOT_TICK_SECS", "value": "120" },
+        { "name": "FM_AUTOPILOT_MAX_CONCURRENT", "value": "3" },
+        { "name": "FM_AUTOPILOT_MIN_QUEUE", "value": "5" },
+        { "name": "FM_AUTOPILOT_EXCLUDE_PROJECTS", "value": "armalo-fi,poly-sdk" },
+        { "name": "FM_AUTOPILOT_YOLO_EXCLUDE", "value": "armalo-fi,poly-sdk,dad-plan" },
+        { "name": "FM_PROJECTS_SPEC", "value": "__FM_PROJECTS_SPEC__" }
+      ],
+      "secrets": [
+        { "name": "GH_TOKEN", "valueFrom": "__GH_TOKEN_SECRET_ARN__" },
+        { "name": "CLAUDE_CREDENTIALS_JSON", "valueFrom": "__CLAUDE_SECRET_ARN__" },
+        { "name": "CODEX_AUTH_JSON", "valueFrom": "__CODEX_SECRET_ARN__" }
+      ],
+      "logConfiguration": {
+        "logDriver": "awslogs",
+        "options": {
+          "awslogs-group": "__LOG_GROUP__",
+          "awslogs-region": "__REGION__",
+          "awslogs-stream-prefix": "fm-autopilot"
+        }
+      },
+      "healthCheck": {
+        "command": [
+          "CMD-SHELL",
+          "test -f /var/fm/home/state/.autopilot-heartbeat && test $(( $(date +%s) - $(stat -c %Y /var/fm/home/state/.autopilot-heartbeat) )) -lt 600"
+        ],
+        "interval": 60,
+        "timeout": 10,
+        "retries": 3,
+        "startPeriod": 180
+      }
+    }
+  ]
+}

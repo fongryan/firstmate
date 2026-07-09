@@ -12,6 +12,7 @@ FM_ROOT="${FM_ROOT_OVERRIDE:-$(cd "$SCRIPT_DIR/.." && pwd)}"
 FM_HOME="${FM_HOME:-${FM_ROOT_OVERRIDE:-$FM_ROOT}}"
 STATE="${FM_STATE_OVERRIDE:-$FM_HOME/state}"
 LOCK="$STATE/.lock"
+AUTOPILOT_OWNER="$STATE/.autopilot-owns-lock"
 mkdir -p "$STATE"
 
 # Known harness command names; extend when a new adapter is verified.
@@ -44,10 +45,31 @@ holder_alive() {  # true if $1 is a live process that looks like a harness
   printf '%s' "$comm_base $(ps -o args= -p "$pid" 2>/dev/null)" | grep -qE "$HARNESS_RE"
 }
 
+# An autopilot-dispatched harness inherits the loop owner's PID through
+# fm-spawn.sh. Retain that owner only while both autopilot owner surfaces still
+# agree and the owner is live. Interactive sessions do not carry this marker,
+# so they continue through the normal harness acquisition path and preempt the
+# non-harness autopilot owner as before.
+autopilot_dispatch_owns_lock() {
+  local inherited=${FM_AUTOPILOT_LOCK_OWNER_PID:-} lock_owner recorded_owner
+  case "$inherited" in ''|*[!0-9]*) return 1 ;; esac
+  [ -f "$LOCK" ] && [ -f "$AUTOPILOT_OWNER" ] || return 1
+  lock_owner=$(cat "$LOCK" 2>/dev/null || true)
+  recorded_owner=$(cat "$AUTOPILOT_OWNER" 2>/dev/null || true)
+  [ "$lock_owner" = "$inherited" ] || return 1
+  [ "$recorded_owner" = "$inherited" ] || return 1
+  kill -0 "$inherited" 2>/dev/null
+}
+
 if [ "${1:-}" = "status" ]; then
   if [ ! -f "$LOCK" ]; then echo "lock: free"; exit 0; fi
   old=$(cat "$LOCK")
   if holder_alive "$old"; then echo "lock: held by live harness pid $old"; else echo "lock: stale (pid $old dead or not a harness)"; fi
+  exit 0
+fi
+
+if autopilot_dispatch_owns_lock; then
+  echo "lock retained: autopilot pid $FM_AUTOPILOT_LOCK_OWNER_PID for dispatched harness"
   exit 0
 fi
 
