@@ -389,8 +389,23 @@ case "$ARG3" in
         # consult the captain profile. If the consultant returns a
         # recommendation, use it. Otherwise, error so the captain can
         # explicitly choose.
+        # Phase 4 (next-agent-work 2026-07-10): use dispatch-profile-deep
+        # which applies captain-only lane protection (armalo-fi-live,
+        # dad-plan, poly-sdk) on top of the consultant's recommendation.
+        DEEP="${CAPTAIN_PROFILE_DEEP:-$BRAIN_ROOT/bin/dispatch-profile-deep.mjs}"
         CONSULTANT="${CAPTAIN_PROFILE_CONSULTANT:-$HOME/.hermes/skills/captain-prompt-profile/hooks/dispatch-profile-consultant.mjs}"
-        if [ -f "$CONSULTANT" ] && command -v node >/dev/null 2>&1; then
+        if [ -f "$DEEP" ] && command -v node >/dev/null 2>&1; then
+          task_desc="$ID ${POS[1]:-}"
+          rec=$(node "$DEEP" "$ID" "${POS[1]:-}" 2>/dev/null | python3 -c "import sys, json; d=json.load(sys.stdin); print(d.get('harness','')) if d.get('harness') else print('')" 2>/dev/null)
+          if [ -n "$rec" ]; then
+            HARNESS="$rec"
+            harness_src="profile-consultant: $rec (deep)"
+            echo "phase-10+4: profile consultant (deep) recommended harness=$rec for task=$ID" >&2
+          else
+            echo "error: config/crew-dispatch.json is active - pass an explicit harness resolved from the dispatch rules (the consultation backstop, so the rules are never silently skipped)." >&2
+            exit 1
+          fi
+        elif [ -f "$CONSULTANT" ] && command -v node >/dev/null 2>&1; then
           task_desc="$ID ${POS[1]:-}"
           rec=$(node "$CONSULTANT" "$task_desc" 2>/dev/null | python3 -c "import sys, json; d=json.load(sys.stdin); print(d.get('recommended',{}).get('harness','')) if d.get('overridesDefault') else print('')" 2>/dev/null)
           if [ -n "$rec" ]; then
