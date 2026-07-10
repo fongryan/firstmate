@@ -167,6 +167,11 @@ When you have no assigned or in-flight work after that reconciliation, go idle a
 An empty queue is a healthy resting state, not a cue to invent work: never spawn a survey, audit, or any self-directed "find work" task on your own initiative.
 If this charter cannot be carried out, append \`blocked: {why}\` or \`failed: {why}\` to the main status file and stop.
 EOF
+
+# Phase 3: secondmate charters get the full profile (they ARE the captain's
+# persistent runtime, so all 12 fields apply).
+"$FM_ROOT/bin/fm-profile-inject.sh" "$BRIEF" "secondmate" || true
+
 if [ "$SECONDMATE_CHARTER" = "{TASK}" ]; then
   echo "scaffolded: $BRIEF (secondmate charter; replace {TASK})"
 else
@@ -248,6 +253,11 @@ The report must stand alone: what you did, what you found, the evidence (command
 When the report is complete, append \`done: {one-line conclusion}\` to the status file and stop.
 If your findings reveal work that should ship (e.g. you reproduced a bug and the fix is clear), say so in the report; firstmate may promote this task in place, and you would then receive mode-specific ship instructions as a follow-up message.
 EOF
+
+# Phase 3: auto-inject captain profile (scout briefs get topic_map,
+# prioritization, decision_style, anti_patterns).
+"$FM_ROOT/bin/fm-profile-inject.sh" "$BRIEF" "scout" || true
+
 echo "scaffolded: $BRIEF (scout; replace {TASK})"
 exit 0
 fi
@@ -354,4 +364,10 @@ Keep it proportionate: skip \`AGENTS.md\` edits for trivial tasks that produced 
 
 $DOD
 EOF
+
+# Phase 3 (captain-prompt-profile-build-s1): auto-inject the captain
+# profile into the brief. Reads PROFILE.compact.md from brain vault;
+# no-op if the profile hasn't been distilled yet.
+"$FM_ROOT/bin/fm-profile-inject.sh" "$BRIEF" "ship" || true
+
 echo "scaffolded: $BRIEF (ship, mode=$MODE; replace {TASK})"
