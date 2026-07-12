@@ -985,6 +985,40 @@ if [ -d "$WT" ] && [ "$FORCE" != "--force" ]; then
   fi
 fi
 
+# Close the canonical lifecycle record before any backend, worktree, or home
+# removal. Existing terminal receipts are preserved; only non-terminal work is
+# advanced, so an already-interrupted task cannot be falsely marked completed.
+if [ -f "$STATE/$ID.lifecycle" ]; then
+  LIFECYCLE_STATE=$(grep '^state=' "$STATE/$ID.lifecycle" 2>/dev/null | tail -1 | cut -d= -f2- || true)
+  case "$LIFECYCLE_STATE" in
+    interrupted|completed|superseded|abandoned) : ;;
+    *)
+      LIFECYCLE_PROOF="$STATE/$ID.teardown-proof"
+      {
+        echo "task=$ID"
+        echo "teardown_at=$(date +%s)"
+        echo "kind=$KIND"
+        echo "force=$FORCE"
+        echo "worktree=$WT"
+        echo "safety=validated-before-teardown"
+      } > "$LIFECYCLE_PROOF"
+      if [ "$FORCE" = "--force" ]; then
+        LIFECYCLE_TARGET=abandoned
+        LIFECYCLE_REASON="explicit force teardown"
+      else
+        LIFECYCLE_TARGET=completed
+        LIFECYCLE_REASON="teardown safety and owner cleanup passed"
+      fi
+      FM_STATE_OVERRIDE="$STATE" FM_LIFECYCLE_ACTOR=teardown \
+        "$SCRIPT_DIR/fm-lifecycle.sh" closeout "$ID" "$LIFECYCLE_TARGET" \
+        --reason "$LIFECYCLE_REASON" --evidence "$LIFECYCLE_PROOF" >/dev/null || {
+          echo "error: lifecycle closeout failed for $ID; preserving runtime and lifecycle evidence" >&2
+          exit 1
+        }
+      ;;
+  esac
+fi
+
 # Best-effort: drop the local task branch so the shared repo does not accumulate refs.
 if [ "$BACKEND" = orca ] && [ "$KIND" != secondmate ]; then
   if [ "$ORCA_PATH_MATCH_VERIFIED" != 1 ]; then
@@ -1035,34 +1069,6 @@ if [ "$KIND" = secondmate ]; then
 fi
 remove_grok_turnend_auth "$STATE" "$ID"
 fm_backend_clear_transition "$BACKEND" "$STATE" "$T" || true
-# Close the canonical lifecycle record before deleting volatile task metadata.
-# Existing/pre-lifecycle tasks remain compatible; newly spawned tasks cannot
-# disappear without a terminal receipt. --force records abandoned rather than
-# falsely claiming completed.
-if [ -f "$STATE/$ID.lifecycle" ]; then
-  LIFECYCLE_PROOF="$STATE/$ID.teardown-proof"
-  {
-    echo "task=$ID"
-    echo "teardown_at=$(date +%s)"
-    echo "kind=$KIND"
-    echo "force=$FORCE"
-    echo "worktree=$WT"
-    echo "safety=validated-before-teardown"
-  } > "$LIFECYCLE_PROOF"
-  if [ "$FORCE" = "--force" ]; then
-    LIFECYCLE_TARGET=abandoned
-    LIFECYCLE_REASON="explicit force teardown"
-  else
-    LIFECYCLE_TARGET=completed
-    LIFECYCLE_REASON="teardown safety and owner cleanup passed"
-  fi
-  FM_STATE_OVERRIDE="$STATE" FM_LIFECYCLE_ACTOR=teardown \
-    "$SCRIPT_DIR/fm-lifecycle.sh" closeout "$ID" "$LIFECYCLE_TARGET" \
-    --reason "$LIFECYCLE_REASON" --evidence "$LIFECYCLE_PROOF" >/dev/null || {
-      echo "error: lifecycle closeout failed for $ID; preserving lifecycle evidence" >&2
-      exit 1
-    }
-fi
 # Remove the per-task temp root (/tmp/fm-<id>/, incl. its gotmp/) recorded by spawn.
 # Read before the state-file rm below; empty (pre-fix tasks without tasktmp=) is a no-op.
 [ -n "$TASK_TMP" ] && rm -rf "$TASK_TMP"

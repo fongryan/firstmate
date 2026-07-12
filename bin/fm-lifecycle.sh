@@ -79,7 +79,13 @@ register_task() {
   [ -n "$branch" ] || die "register requires --branch"
   [ -n "$worktree" ] || die "register requires --worktree"
   [ -n "$objective" ] || die "register requires --objective"
-  [ ! -e "$STATE/$id.lifecycle" ] || die "task already registered: $id"
+  if [ -e "$STATE/$id.lifecycle" ]; then
+    if [ "$desired" = active ] && [ "${FM_LIFECYCLE_RESTORE:-}" = 1 ]; then
+      transition_task "$id" active --reason runtime-restart --evidence "$STATE/$id.lifecycle"
+      return 0
+    fi
+    die "task already registered: $id"
+  fi
   [ "$desired" != active ] || {
     # Direct active registration is allowed only for adapters restoring a task;
     # the caller must make the owner explicit and this is still receipt-backed.
@@ -132,7 +138,8 @@ transition_task() {
     printf 'unchanged %s state=%s\n' "$id" "$to"
     return 0
   fi
-  fm_lifecycle_transition_allowed "$from" "$to" || die "transition not allowed: $from -> $to"
+  FM_LIFECYCLE_RESTORE="${FM_LIFECYCLE_RESTORE:-}" \
+    fm_lifecycle_transition_allowed "$from" "$to" || die "transition not allowed: $from -> $to"
   now=$(fm_lifecycle_now)
   seq=$((seq + 1))
   awk -v state="$to" -v now="$now" -v seq="$seq" \

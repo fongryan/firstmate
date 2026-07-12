@@ -47,4 +47,18 @@ test_dry_run_is_non_mutating_and_apply_is_idempotent() {
   pass "reaper is dry-run safe and apply-idempotent"
 }
 
+test_interrupted_task_can_be_explicitly_restarted() {
+  FM_STATE_OVERRIDE="$STATE" FM_LIFECYCLE_NOW=3000 FM_LIFECYCLE_RESTORE=1 FM_LIFECYCLE_HEARTBEAT_TTL=10 FM_LIFECYCLE_HEARTBEAT_GRACE=5 \
+    "$LIFECYCLE" register restartable --state active --repo app --owner restart \
+    --branch restart --worktree "$TMP_ROOT/restart" --objective restart >/dev/null || fail "restart task register failed"
+  FM_STATE_OVERRIDE="$STATE" FM_LIFECYCLE_NOW=4000 "$REAPER" --apply >/dev/null || fail "restart task reap failed"
+  assert_grep 'state=interrupted' "$STATE/restartable.lifecycle" "restart task not interrupted"
+  FM_STATE_OVERRIDE="$STATE" FM_LIFECYCLE_NOW=4010 FM_LIFECYCLE_RESTORE=1 \
+    "$LIFECYCLE" register restartable --state active --repo app --owner restart \
+    --branch restart --worktree "$TMP_ROOT/restart" --objective restart >/dev/null || fail "explicit restart failed"
+  assert_grep 'state=active' "$STATE/restartable.lifecycle" "explicit restart did not reactivate"
+  pass "only explicit restore can restart interrupted work"
+}
+
 test_dry_run_is_non_mutating_and_apply_is_idempotent
+test_interrupted_task_can_be_explicitly_restarted

@@ -469,6 +469,37 @@ heartbeat_scan_finds_actionable() {
   return 1
 }
 
+# Lifecycle status reconciliation happens before heartbeat decisions. A blocked
+# or review-gated task is not an orphan merely because it is not generating
+# tokens; it must leave active state before the stale reaper can classify it.
+lifecycle_reconcile_status_tasks() {
+  local record id state log last verb target
+  for record in "$STATE"/*.lifecycle; do
+    [ -f "$record" ] || continue
+    id=$(basename "$record" .lifecycle)
+    state=$(grep '^state=' "$record" 2>/dev/null | tail -1 | cut -d= -f2- || true)
+    [ "$state" = active ] || continue
+    log="$STATE/$id.status"
+    [ -f "$log" ] || continue
+    last=$(grep -v '^[[:space:]]*$' "$log" 2>/dev/null | tail -1 || true)
+    verb=${last%%:*}
+    case "$verb" in
+      blocked) target=blocked ;;
+      needs-decision) target=needs-decision ;;
+      done) target=ready-for-review ;;
+      failed) target=interrupted ;;
+      *) continue ;;
+    esac
+    if [ "$target" = interrupted ]; then
+      FM_STATE_OVERRIDE="$STATE" FM_LIFECYCLE_ACTOR=watcher \
+        "$SCRIPT_DIR/fm-lifecycle.sh" closeout "$id" interrupted --reason "crew reported failed" --evidence "$log" >/dev/null 2>&1 || true
+    else
+      FM_STATE_OVERRIDE="$STATE" FM_LIFECYCLE_ACTOR=watcher \
+        "$SCRIPT_DIR/fm-lifecycle.sh" transition "$id" "$target" --reason "crew status: $verb" --evidence "$log" >/dev/null 2>&1 || true
+    fi
+  done
+}
+
 # Lifecycle heartbeats are updated only for tasks with positive working
 # evidence. A dead pane or stale status log never refreshes a task, so the
 # reaper remains authoritative for orphan detection.
@@ -491,7 +522,7 @@ lifecycle_reap_due() {
   out=$(FM_STATE_OVERRIDE="$STATE" "$SCRIPT_DIR/fm-lifecycle-reap.sh" --apply 2>/dev/null || true)
   [ -n "$out" ] || return 0
   printf '%s\n' "$out" >> "$STATE/.lifecycle-reaper.log" 2>/dev/null || true
-  fm_wake_append lifecycle lifecycle "$out" || true
+  fm_wake_append signal lifecycle "lifecycle: $out" || true
 }
 
 # event_wait_or_sleep: the terminal wait of each supervision cycle. For a home
@@ -894,6 +925,7 @@ EOF
   hb=$(( HEARTBEAT * (1 << streak) ))
   [ "$hb" -gt "$HEARTBEAT_MAX" ] && hb=$HEARTBEAT_MAX
   if [ "$(age_of "$STATE/.last-heartbeat")" -ge "$hb" ]; then
+    lifecycle_reconcile_status_tasks
     lifecycle_heartbeat_working_tasks
     lifecycle_reap_due
     # Triage: in always-on mode a heartbeat is benign unless the cheap fleet-scan

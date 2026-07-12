@@ -27,14 +27,19 @@ evidence survive worktree reuse.
    the harness.
 2. The watcher refreshes heartbeats only when the crew has positive working
    evidence.
-3. The periodic watcher and every session restart run
+3. The watcher first folds `blocked`, `needs-decision`, `done`, and `failed`
+   status events into lifecycle state so parked work is not mistaken for a
+   dead active run.
+4. The periodic watcher and every session restart run
    `fm-lifecycle-reap.sh --apply`.
-4. An expired active heartbeat becomes `interrupted` with a receipt. The same
+5. An expired active heartbeat becomes `interrupted` with a receipt. The same
    operation is safe to repeat.
-5. `fm-lifecycle-reconcile.sh` classifies worktrees. Dirty, leased, missing,
+6. An interrupted task can only be restarted through the explicit restore path;
+   ordinary duplicate registration is rejected.
+7. `fm-lifecycle-reconcile.sh` classifies worktrees. Dirty, leased, missing,
    unknown, and active worktrees are protected; only clean terminal work is
    eligible for an explicit return.
-6. `fm-teardown.sh` writes a terminal closeout receipt before deleting volatile
+8. `fm-teardown.sh` writes a terminal closeout receipt before deleting volatile
    metadata. Normal teardown is `completed`; explicit force teardown is
    `abandoned`.
 

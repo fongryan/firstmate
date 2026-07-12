@@ -47,6 +47,7 @@ fm_lifecycle_transition_allowed() {
   case "$from:$to" in
     queued:active|queued:abandoned|queued:superseded) return 0 ;;
     active:blocked|active:needs-decision|active:ready-for-review|active:interrupted|active:completed|active:superseded|active:abandoned) return 0 ;;
+    interrupted:active) [ "${FM_LIFECYCLE_RESTORE:-}" = 1 ] ;;
     blocked:active|blocked:needs-decision|blocked:interrupted|blocked:superseded|blocked:abandoned) return 0 ;;
     needs-decision:active|needs-decision:blocked|needs-decision:interrupted|needs-decision:superseded|needs-decision:abandoned) return 0 ;;
     ready-for-review:active|ready-for-review:completed|ready-for-review:interrupted|ready-for-review:superseded|ready-for-review:abandoned) return 0 ;;
