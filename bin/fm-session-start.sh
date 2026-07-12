@@ -205,9 +205,11 @@ fi
 # explicit interrupted work before the context digest is rendered.
 subsection "LIFECYCLE RECOVERY"
 if [ "$READ_ONLY" -eq 1 ]; then
+  FM_STATE_OVERRIDE="$STATE" "$SCRIPT_DIR/fm-lifecycle-import.sh" 2>&1 || true
   FM_STATE_OVERRIDE="$STATE" "$SCRIPT_DIR/fm-lifecycle-reap.sh" --dry-run 2>&1 || true
   FM_STATE_OVERRIDE="$STATE" "$SCRIPT_DIR/fm-lifecycle-reconcile.sh" 2>&1 || true
 else
+  FM_STATE_OVERRIDE="$STATE" "$SCRIPT_DIR/fm-lifecycle-import.sh" 2>&1 || true
   FM_STATE_OVERRIDE="$STATE" "$SCRIPT_DIR/fm-lifecycle-reap.sh" --apply 2>&1 || true
   FM_STATE_OVERRIDE="$STATE" "$SCRIPT_DIR/fm-lifecycle-reconcile.sh" 2>&1 || true
 fi
