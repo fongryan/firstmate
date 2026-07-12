@@ -260,6 +260,27 @@ test_test_root_symlink_escape_is_rejected() {
   pass "test hook gate rejects a syntactically-contained symlink to an external workspace"
 }
 
+test_concurrent_stale_transaction_lock_recovery() {
+  local home="$TMP_ROOT/stale-race" req="$TMP_ROOT/stale-race.json" pids=() i failures=0 accepted=0 duplicate=0 status
+  setup_home "$home"; request "$req" act-stale-race
+  printf '99999999\n' > "$home/state/.activation-intake.lock"
+  printf '{"pid":99999999,"token":"stale-token","fleetOwnerPid":99999999}\n' > "$home/state/.activation-intake.lock.owner.json"
+  for i in 1 2 3 4 5 6 7 8; do
+    (run_cli "$home" "$req" > "$TMP_ROOT/stale-out.$i") & pids+=("$!")
+  done
+  for i in "${!pids[@]}"; do wait "${pids[$i]}" || failures=$((failures + 1)); done
+  [ "$failures" -eq 0 ] || fail "all stale-lock contenders should finish accepted/duplicate"
+  for i in 1 2 3 4 5 6 7 8; do
+    status=$(ack_status "$(cat "$TMP_ROOT/stale-out.$i")")
+    case "$status" in accepted) accepted=$((accepted + 1));; duplicate) duplicate=$((duplicate + 1));; *) fail "unexpected stale-lock ACK: $status";; esac
+  done
+  [ "$accepted" -eq 1 ] && [ "$duplicate" -eq 7 ] || fail "stale recovery should elect exactly one accepted owner"
+  [ "$(grep -c 'act-stale-race' "$home/data/backlog.md")" -eq 1 ] || fail "stale recovery duplicated backlog item"
+  [ ! -e "$home/state/.activation-intake.lock" ] || fail "stale recovery left the lock file"
+  [ ! -e "$home/state/.activation-intake.lock.owner.json" ] || fail "stale recovery left owner metadata"
+  pass "concurrent stale-lock recovery elects one tokenized owner and preserves its successor"
+}
+
 test_first_delivery_and_idempotency
 test_conflict_and_rejected
 test_concurrent_duplicate_is_singleton
@@ -271,3 +292,4 @@ test_kill_point_recovery
 test_rendered_fields_reject_instructions_and_controls
 test_production_refuses_test_hooks_without_mutation
 test_test_root_symlink_escape_is_rejected
+test_concurrent_stale_transaction_lock_recovery

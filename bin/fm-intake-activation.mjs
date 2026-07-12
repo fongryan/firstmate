@@ -129,28 +129,72 @@ function stillOwnsFleet(state, pid) {
 }
 
 function writeAtomic(file, content) {
-  fs.mkdirSync(path.dirname(file), { recursive: true });
+  const parent = path.dirname(file);
+  const parentExisted = fs.existsSync(parent);
+  fs.mkdirSync(parent, { recursive: true });
+  if (!parentExisted) fsyncDirectory(path.dirname(parent));
   const temp = `${file}.tmp-${process.pid}-${Date.now()}`;
-  fs.writeFileSync(temp, content, { mode: 0o600 });
+  const fd = fs.openSync(temp, 'w', 0o600);
+  try {
+    fs.writeFileSync(fd, content);
+    fs.fsyncSync(fd);
+  } finally {
+    fs.closeSync(fd);
+  }
   fs.renameSync(temp, file);
+  fsyncDirectory(parent);
+}
+
+function fsyncDirectory(directory) {
+  const fd = fs.openSync(directory, 'r');
+  try { fs.fsyncSync(fd); }
+  catch (error) { if (!['EINVAL', 'ENOTSUP'].includes(error.code)) throw error; }
+  finally { fs.closeSync(fd); }
+}
+
+function removeDurable(file) {
+  try { fs.unlinkSync(file); }
+  catch (error) { if (error.code !== 'ENOENT') throw error; else return; }
+  fsyncDirectory(path.dirname(file));
+}
+
+function removeDirectoryDurable(directory) {
+  const parent = path.dirname(directory);
+  fs.rmSync(directory, { recursive: true, force: true });
+  fsyncDirectory(parent);
 }
 
 function acquireTransactionLock(state, fleetOwnerPid) {
   const lock = path.join(state, '.activation-intake.lock');
+  const ownerPath = `${lock}.owner.json`;
   for (let attempt = 0; attempt < 400; attempt++) {
-    try {
-      fs.writeFileSync(lock, `${JSON.stringify({ pid: process.pid, fleetOwnerPid, acquiredAt: new Date().toISOString() })}\n`, { flag: 'wx', mode: 0o600 });
-      return lock;
-    } catch (error) {
-      if (error.code !== 'EEXIST') throw error;
-      let owner;
-      try { owner = JSON.parse(fs.readFileSync(lock, 'utf8')); }
-      catch { sleep(5); continue; }
-      if (!pidAlive(owner.pid)) { fs.rmSync(lock, { force: true }); continue; }
-      sleep(5);
+    const result = spawnSync('shlock', ['-f', lock, '-p', String(process.pid)], { encoding: 'utf8' });
+    if (result.error?.code === 'ENOENT') throw new Error('shlock is required for ownership-safe activation transaction locking');
+    if (result.status === 0) {
+      const token = crypto.randomUUID();
+      try {
+        writeAtomic(ownerPath, `${JSON.stringify({ pid: process.pid, token, fleetOwnerPid, acquiredAt: new Date().toISOString() })}\n`);
+      } catch (error) {
+        removeDurable(lock);
+        throw error;
+      }
+      return { path: lock, ownerPath, pid: process.pid, token };
     }
+    sleep(5);
   }
   throw new Error('activation transaction lock is busy');
+}
+
+function releaseTransactionLock(lock) {
+  let owner;
+  try { owner = JSON.parse(fs.readFileSync(lock.ownerPath, 'utf8')); } catch { return; }
+  let lockPid;
+  try { lockPid = Number(fs.readFileSync(lock.path, 'utf8').trim()); } catch { return; }
+  if (owner.token !== lock.token || owner.pid !== lock.pid || lockPid !== lock.pid) return;
+  // Remove metadata first: the PID lock still excludes a successor, so cleanup
+  // cannot erase a successor's token between the ownership check and unlink.
+  removeDurable(lock.ownerPath);
+  removeDurable(lock.path);
 }
 
 function markdown(value) {
@@ -189,7 +233,7 @@ function recoverTransactions(state, expectedFleetOwner) {
       if (fleetOwner(state) !== expectedFleetOwner) throw new Error('canonical fleet ownership changed during transaction recovery');
       writeAtomic(item.path, Buffer.from(item.base64, 'base64'));
     }
-    fs.rmSync(intentPath, { force: true });
+    removeDurable(intentPath);
   }
 }
 
@@ -250,20 +294,20 @@ if (request) {
           } catch (writeFailure) {
             if (stillOwnsFleet(state, ownerPid)) {
               writeAtomic(backlog, oldBacklog);
-              fs.rmSync(path.dirname(brief), { recursive: true, force: true });
-              fs.rmSync(receipt, { force: true });
-              fs.rmSync(intent, { force: true });
+              removeDirectoryDurable(path.dirname(brief));
+              removeDurable(receipt);
+              removeDurable(intent);
             }
             throw writeFailure;
           }
-          fs.rmSync(intent, { force: true });
+          removeDurable(intent);
           emit('accepted', request, { requestHash: hash, taskId: request.activationId, briefPath: brief });
         }
       }
     } catch (failure) {
       finish('retryable', request, 3, { error: failure.message });
     } finally {
-      if (lock) fs.rmSync(lock, { force: true });
+      if (lock) releaseTransactionLock(lock);
     }
   }
 }
