@@ -5,7 +5,11 @@ set -u
 
 TMP_ROOT=$(fm_test_tmproot fm-intake-activation)
 CLI="$ROOT/bin/fm-intake-activation.mjs"
+export NODE_ENV=test
+export FM_INTAKE_TEST_ROOT="$TMP_ROOT"
 export FM_INTAKE_TEST_ALLOW_NON_HARNESS_OWNER=1
+mkdir -p "$FM_INTAKE_TEST_ROOT"
+touch "$FM_INTAKE_TEST_ROOT/.fm-intake-test-root"
 
 canonical_hash() {
   node -e '
@@ -220,6 +224,26 @@ test_rendered_fields_reject_instructions_and_controls() {
   pass "bounded rendered fields reject controls and source-like executable instructions"
 }
 
+test_production_refuses_test_hooks_without_mutation() {
+  local hook home req before out status index=0 id
+  for hook in FM_INTAKE_TEST_ALLOW_NON_HARNESS_OWNER FM_INTAKE_KILL_AFTER FM_INTAKE_FAIL_AFTER_BACKLOG; do
+    index=$((index + 1)); id="act-prod-$index"
+    home="$TMP_ROOT/prod-$hook"; req="$TMP_ROOT/prod-$hook.json"
+    setup_home "$home"; request "$req" "$id"
+    before=$(cat "$home/data/backlog.md")
+    set +e
+    out=$(env -u FM_INTAKE_TEST_ALLOW_NON_HARNESS_OWNER -u FM_INTAKE_KILL_AFTER -u FM_INTAKE_FAIL_AFTER_BACKLOG \
+      NODE_ENV=production FM_INTAKE_TEST_ROOT="$TMP_ROOT" "$hook"=1 FM_HOME="$home" node "$CLI" --request "$req" 2>/dev/null)
+    status=$?
+    set -e
+    [ "$status" -ne 0 ] || fail "$hook must not operate under NODE_ENV=production"
+    [ "$(ack_status "$out")" = rejected ] || fail "$hook under production should ACK rejected: $out"
+    [ "$(cat "$home/data/backlog.md")" = "$before" ] || fail "$hook mutated backlog under production"
+    [ ! -e "$home/data/$id/brief.md" ] || fail "$hook created a brief under production"
+  done
+  pass "production refuses every test hook before workspace mutation"
+}
+
 test_first_delivery_and_idempotency
 test_conflict_and_rejected
 test_concurrent_duplicate_is_singleton
@@ -229,3 +253,4 @@ test_requires_canonical_fleet_lock_authority
 test_hash_is_payload_bound
 test_kill_point_recovery
 test_rendered_fields_reject_instructions_and_controls
+test_production_refuses_test_hooks_without_mutation

@@ -7,6 +7,7 @@ import path from 'node:path';
 const VERSION = 'firstmate-activation-request@1';
 const FORBIDDEN_KEYS = new Set(['command', 'commands', 'shell', 'script', 'sourceContent', 'rawSource', 'content']);
 const INSTRUCTION_PATTERN = /(?:ignore\s+(?:all|previous|prior)\b|curl\s|wget\s|\|\s*(?:ba)?sh\b|(?:ba)?sh\s+-c\b|powershell\b|rm\s+-rf\b|<script\b|`|\$\()/i;
+const TEST_HOOKS = ['FM_INTAKE_TEST_ALLOW_NON_HARNESS_OWNER', 'FM_INTAKE_KILL_AFTER', 'FM_INTAKE_FAIL_AFTER_BACKLOG'];
 const sleep = ms => Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
 
 function emit(ack, request = {}, extra = {}) {
@@ -28,6 +29,17 @@ function computedHash(request) {
   const payload = structuredClone(request);
   delete payload.requestHash;
   return `sha256:${crypto.createHash('sha256').update(JSON.stringify(canonical(payload))).digest('hex')}`;
+}
+
+function testHookError(home) {
+  if (!TEST_HOOKS.some(key => process.env[key] !== undefined)) return null;
+  if (process.env.NODE_ENV !== 'test') return 'activation intake test hooks are forbidden outside NODE_ENV=test';
+  const rootValue = process.env.FM_INTAKE_TEST_ROOT;
+  if (!rootValue) return 'activation intake test hooks require FM_INTAKE_TEST_ROOT';
+  const root = path.resolve(rootValue);
+  if (!fs.existsSync(path.join(root, '.fm-intake-test-root'))) return 'activation intake test root sentinel is absent';
+  if (home !== root && !home.startsWith(`${root}${path.sep}`)) return 'FM_HOME is outside the activation intake test root';
+  return null;
 }
 
 function hasForbiddenKey(value) {
@@ -182,10 +194,11 @@ else {
 }
 
 if (request) {
-  const error = validate(request);
+  const home = path.resolve(process.env.FM_HOME || path.join(import.meta.dirname, '..'));
+  const hookError = testHookError(home);
+  const error = hookError || validate(request);
   if (error) finish('rejected', request, 2, { error });
   else {
-    const home = path.resolve(process.env.FM_HOME || path.join(import.meta.dirname, '..'));
     const data = path.join(home, 'data');
     const state = path.join(home, 'state');
     fs.mkdirSync(state, { recursive: true });
