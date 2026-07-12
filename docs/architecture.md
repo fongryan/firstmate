@@ -6,6 +6,39 @@ The [README](../README.md) carries the high-level diagram and a short synopsis.
 This document expands every part of it.
 firstmate's full operating manual for the orchestrator agent itself is [`AGENTS.md`](../AGENTS.md); this is the human-facing companion.
 
+## Closed-loop lifecycle contract
+
+Firstmate maintains a canonical lifecycle record at `state/<task>.lifecycle`
+and an append-only transition receipt at `state/<task>.events`. The lifecycle
+record is the current-state owner; `.meta` remains the runtime/backend adapter,
+`.status` remains a sparse wake-event log, and `data/backlog.md` remains the
+human queue projection. A task may not disappear from active work without a
+terminal receipt.
+
+The lifecycle command surface is backend-neutral:
+
+```sh
+bin/fm-lifecycle.sh register <id> --repo <repo> --owner <owner> \
+  --branch <branch> --worktree <path> --objective <text>
+bin/fm-lifecycle.sh heartbeat <id> --owner <owner>
+bin/fm-lifecycle.sh closeout <id> completed --reason <text> --evidence <path>
+bin/fm-lifecycle-reap.sh --dry-run
+bin/fm-lifecycle-reap.sh --apply
+bin/fm-lifecycle-reconcile.sh
+```
+
+Spawn registers a task before launching its harness. The watcher refreshes
+heartbeats only when it has positive working evidence, then periodically runs
+the reaper. Startup recovery runs the same reaper and reconciliation. A stale
+active task becomes `interrupted` with a receipt and restart evidence; an
+ambiguous or dirty worktree is surfaced and protected. Reconciliation never
+removes dirty, leased, missing, or unknown worktrees. Teardown closes the
+lifecycle record before deleting volatile runtime metadata; ordinary teardown
+records `completed`, while explicit force teardown records `abandoned`.
+
+This is intentionally closed-loop but not reckless: classification is
+autonomous, destructive cleanup remains evidence- and ownership-gated.
+
 ## Event-driven supervision
 
 A zero-token bash watcher (`bin/fm-watch.sh`) sleeps on the fleet, classifies detected wakes in bash, and wakes the first mate only when something is actionable.

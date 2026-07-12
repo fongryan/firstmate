@@ -469,6 +469,31 @@ heartbeat_scan_finds_actionable() {
   return 1
 }
 
+# Lifecycle heartbeats are updated only for tasks with positive working
+# evidence. A dead pane or stale status log never refreshes a task, so the
+# reaper remains authoritative for orphan detection.
+lifecycle_heartbeat_working_tasks() {
+  local record id state
+  for record in "$STATE"/*.lifecycle; do
+    [ -f "$record" ] || continue
+    id=$(basename "$record" .lifecycle)
+    state=$(grep '^state=' "$record" 2>/dev/null | tail -1 | cut -d= -f2- || true)
+    [ "$state" = active ] || continue
+    if crew_is_provably_working "$id"; then
+      FM_STATE_OVERRIDE="$STATE" FM_LIFECYCLE_ACTOR=watcher \
+        "$SCRIPT_DIR/fm-lifecycle.sh" heartbeat "$id" --owner "$id" >/dev/null 2>&1 || true
+    fi
+  done
+}
+
+lifecycle_reap_due() {
+  local out
+  out=$(FM_STATE_OVERRIDE="$STATE" "$SCRIPT_DIR/fm-lifecycle-reap.sh" --apply 2>/dev/null || true)
+  [ -n "$out" ] || return 0
+  printf '%s\n' "$out" >> "$STATE/.lifecycle-reaper.log" 2>/dev/null || true
+  fm_wake_append lifecycle lifecycle "$out" || true
+}
+
 # event_wait_or_sleep: the terminal wait of each supervision cycle. For a home
 # with push-capable windows (herdr), it replaces the blind `sleep POLL` with a
 # bounded wait on the backend's native transition stream, so a crew going
@@ -869,6 +894,8 @@ EOF
   hb=$(( HEARTBEAT * (1 << streak) ))
   [ "$hb" -gt "$HEARTBEAT_MAX" ] && hb=$HEARTBEAT_MAX
   if [ "$(age_of "$STATE/.last-heartbeat")" -ge "$hb" ]; then
+    lifecycle_heartbeat_working_tasks
+    lifecycle_reap_due
     # Triage: in always-on mode a heartbeat is benign unless the cheap fleet-scan
     # turns up a captain-relevant status the per-wake path missed. Absorb the
     # no-change case (advance the schedule and back off exactly as wake() would,

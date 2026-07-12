@@ -262,7 +262,7 @@ backlog_json() {
 
 task_json_lines() {
   local meta id kind harness mode yolo project worktree home projects backend target status_log report_path
-  local pr pr_source event_json current_json endpoint_exists agent_alive meta_json status_json report_json worktree_json home_json
+  local pr pr_source event_json current_json endpoint_exists agent_alive meta_json status_json report_json worktree_json home_json lifecycle_json
   local last_event_raw current_state current_source pending_decision blocked_event report_present=0 pr_from_status
   local open_decisions_tsv open_decisions_json
 
@@ -346,6 +346,11 @@ task_json_lines() {
     [ -f "$report_path" ] && report_present=1 || report_present=0
     meta_json=$(path_present_json "$meta")
     status_json=$event_json
+    if [ -f "$STATE/$id.lifecycle" ]; then
+      lifecycle_json=$(jq -Rn 'reduce inputs as $line ({}; ($line|split("=")|select(length>=2)) as $p | .[$p[0]] = ($p[1:]|join("=")))' < "$STATE/$id.lifecycle")
+    else
+      lifecycle_json=null
+    fi
     report_json=$(path_present_json "$report_path")
     if [ -n "$worktree" ]; then worktree_json=$(path_present_json "$worktree"); else worktree_json=$(jq -n '{path:null,present:false}'); fi
     if [ -n "$home" ]; then home_json=$(path_present_json "$home"); else home_json=$(jq -n '{path:null,present:false}'); fi
@@ -369,6 +374,7 @@ task_json_lines() {
       --argjson current_state "$current_json" \
       --argjson meta_path "$meta_json" \
       --argjson status_log "$status_json" \
+      --argjson lifecycle "$lifecycle_json" \
       --argjson report "$report_json" \
       --argjson worktree_path "$worktree_json" \
       --argjson home_path "$home_json" \
@@ -394,6 +400,7 @@ task_json_lines() {
         },
         secondmate_projects:($projects | if . == "" then [] else split(",") | map(gsub("^[[:space:]]+|[[:space:]]+$"; "")) | map(select(. != "")) end),
         current_state:$current_state,
+        lifecycle:$lifecycle,
         endpoint:{target:($target | if . == "" then null else . end),exists:$endpoint_exists,agent_alive:$agent_alive},
         pr:{url:($pr | if . == "" then null else . end),source:$pr_source},
         hints:{

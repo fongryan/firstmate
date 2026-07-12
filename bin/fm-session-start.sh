@@ -200,6 +200,18 @@ else
   fi
 fi
 
+# Recover lifecycle state at every captain restart. The command is idempotent,
+# receipt-backed, and never removes worktrees; it turns dead active records into
+# explicit interrupted work before the context digest is rendered.
+subsection "LIFECYCLE RECOVERY"
+if [ "$READ_ONLY" -eq 1 ]; then
+  FM_STATE_OVERRIDE="$STATE" "$SCRIPT_DIR/fm-lifecycle-reap.sh" --dry-run 2>&1 || true
+  FM_STATE_OVERRIDE="$STATE" "$SCRIPT_DIR/fm-lifecycle-reconcile.sh" 2>&1 || true
+else
+  FM_STATE_OVERRIDE="$STATE" "$SCRIPT_DIR/fm-lifecycle-reap.sh" --apply 2>&1 || true
+  FM_STATE_OVERRIDE="$STATE" "$SCRIPT_DIR/fm-lifecycle-reconcile.sh" 2>&1 || true
+fi
+
 # --- 4. supervision operating instructions ----------------------------------
 AFK_PRESENT=0
 [ -e "$STATE/.afk" ] && AFK_PRESENT=1
