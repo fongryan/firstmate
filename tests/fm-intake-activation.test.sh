@@ -244,6 +244,22 @@ test_production_refuses_test_hooks_without_mutation() {
   pass "production refuses every test hook before workspace mutation"
 }
 
+test_test_root_symlink_escape_is_rejected() {
+  local outside="$TMP_ROOT-outside" linked="$TMP_ROOT/escape" req="$TMP_ROOT/symlink-escape.json" before out status
+  mkdir -p "$outside"
+  setup_home "$outside"
+  ln -s "$outside" "$linked"
+  request "$req" act-symlink-escape
+  before=$(cat "$outside/data/backlog.md")
+  set +e; out=$(FM_HOME="$linked" node "$CLI" --request "$req" 2>/dev/null); status=$?; set -e
+  [ "$status" -ne 0 ] || fail "symlinked FM_HOME escaping the test root should reject"
+  [ "$(ack_status "$out")" = rejected ] || fail "symlink escape should ACK rejected: $out"
+  [ "$(cat "$outside/data/backlog.md")" = "$before" ] || fail "symlink escape mutated the external backlog"
+  [ ! -e "$outside/data/act-symlink-escape/brief.md" ] || fail "symlink escape created an external brief"
+  rm -rf "$outside"
+  pass "test hook gate rejects a syntactically-contained symlink to an external workspace"
+}
+
 test_first_delivery_and_idempotency
 test_conflict_and_rejected
 test_concurrent_duplicate_is_singleton
@@ -254,3 +270,4 @@ test_hash_is_payload_bound
 test_kill_point_recovery
 test_rendered_fields_reject_instructions_and_controls
 test_production_refuses_test_hooks_without_mutation
+test_test_root_symlink_escape_is_rejected

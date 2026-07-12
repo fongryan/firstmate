@@ -37,8 +37,20 @@ function testHookError(home) {
   const rootValue = process.env.FM_INTAKE_TEST_ROOT;
   if (!rootValue) return 'activation intake test hooks require FM_INTAKE_TEST_ROOT';
   const root = path.resolve(rootValue);
-  if (!fs.existsSync(path.join(root, '.fm-intake-test-root'))) return 'activation intake test root sentinel is absent';
-  if (home !== root && !home.startsWith(`${root}${path.sep}`)) return 'FM_HOME is outside the activation intake test root';
+  const sentinel = path.join(root, '.fm-intake-test-root');
+  try {
+    if (fs.lstatSync(root).isSymbolicLink()) return 'activation intake test root must not be a symlink';
+    if (fs.lstatSync(home).isSymbolicLink()) return 'FM_HOME must not be a symlink when test hooks are active';
+    if (fs.lstatSync(sentinel).isSymbolicLink()) return 'activation intake test root sentinel must not be a symlink';
+    const realRoot = fs.realpathSync(root);
+    const realHome = fs.realpathSync(home);
+    const realSentinel = fs.realpathSync(sentinel);
+    if (path.dirname(realSentinel) !== realRoot) return 'activation intake test root sentinel escapes the real test root';
+    const relative = path.relative(realRoot, realHome);
+    if (relative === '..' || relative.startsWith(`..${path.sep}`) || path.isAbsolute(relative)) return 'FM_HOME is outside the real activation intake test root';
+  } catch {
+    return 'activation intake test root, sentinel, and FM_HOME must exist and resolve safely';
+  }
   return null;
 }
 
