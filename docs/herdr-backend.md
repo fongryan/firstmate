@@ -20,7 +20,7 @@ Prerequisites:
 
 - `herdr` itself, protocol 14 or newer (installed 0.7.1 verified) - see [herdr.dev](https://herdr.dev) for install instructions.
 - `jq`, required to parse herdr's JSON output: `brew install jq` (or your platform's package manager).
-- The same universal requirements as tmux (a verified crew harness, git with GitHub auth, node, treehouse, no-mistakes, gh-axi, chrome-devtools-axi, lavish-axi, tasks-axi 0.1.1 or newer with `update --archive-body` and atomic multi-ID `mv` from 0.2.2, and quota-axi); treehouse still provides the worktree, herdr only provides the session.
+- The universal firstmate prerequisites - a verified crew harness plus the required toolchain, owned by [`docs/configuration.md`](configuration.md) ("Harness support", "Toolchain"); treehouse still provides the worktree, herdr only provides the session.
 
 Select herdr by putting `herdr` in a local `config/backend` file - the durable way to pick it - or by exporting `FM_BACKEND=herdr` when you launch your harness for a one-off session; telling the first mate in chat to use herdr also works.
 It can also be auto-detected: when firstmate itself is running natively inside herdr (`HERDR_ENV=1`) and no explicit backend is set, firstmate auto-selects herdr and prints a one-time opt-out notice; running inside tmux nested in herdr always resolves to tmux instead.
@@ -163,9 +163,8 @@ A workspace whose label this adapter did not derive (see "Label derivation" abov
 A herdr task's `window=` meta field holds `<herdr-session>:<pane-id>`, for example `default:w1:p2`.
 The pane id itself contains a colon, so the adapter splits on the FIRST colon only, never on every colon.
 This mirrors tmux's `session:window` target shape closely enough that `fm_backend_resolve_selector` (in `bin/fm-backend.sh`) needed no backend-specific logic at all - it already just returns a task's recorded `window=` value verbatim.
-Operational commands should prefer the exact task id or stable `fm-<id>` label, both of which resolve through this home's metadata.
-Exact task ids win first, so ids beginning with `fm-` are not stripped as legacy labels.
-An explicit herdr target also works when it exactly matches recorded metadata, but ad hoc bare-name lookup with no metadata remains the legacy tmux live-window fallback for non-`fm-` names.
+Task-selector resolution is the shared contract owned by [`docs/configuration.md`](configuration.md) ("Runtime backend").
+For a bare unknown non-`fm-` name, Herdr retains the legacy tmux live-window fallback.
 
 Herdr tasks additionally record:
 
@@ -377,7 +376,8 @@ Other runtime backends, including zellij, orca, and cmux, are not yet supported 
 For `backend=tmux` every dispatch resolves to the exact same underlying call as before (`fm_backend_capture`'s tmux arm runs the identical `tmux capture-pane -p -t <target> -S -40`; `fm_backend_tmux_send_text_submit` re-exports `fm_tmux_submit_core` verbatim), so tmux behavior is unchanged byte-for-byte.
 For `backend=herdr`, busy detection tries the native `agent.get`-backed `fm_backend_herdr_busy_state` first, trusts only `busy` outright, and corroborates every non-`busy` verdict with the shared regex-over-capture reader before treating the supervisor pane as not busy.
 This mirrors the per-task stale-pane busy check `bin/fm-supervise-daemon.sh`'s `stale_window_is_busy` already used; composer/pending detection and the verified submit route through `fm_backend_herdr_composer_state`/`fm_backend_herdr_send_text_submit`.
-The wedge alarm's supervisor-client status-line flash (`tmux display-message ...`) is tmux-only cosmetic UI with no herdr equivalent; it is skipped for non-tmux backends, while the ERROR log line and the durable `state/.subsuper-inject-wedged` marker (the actual signal) are backend-independent and unaffected.
+The wedge alarm's supervisor-client status-line flash (`tmux display-message ...`) is tmux-only cosmetic UI with no herdr equivalent, so it is skipped for non-tmux backends.
+A max-defer wedge also attempts the configured backend-independent active alert described in [`wedge-alarm.md`](wedge-alarm.md), while the ERROR log line and durable `state/.subsuper-inject-wedged` marker remain backend-independent.
 
 **A pre-existing bug this surfaced: `fm_backend_target_exists`'s herdr arm.** Before this task, that function's herdr case called `HERDR_SESSION="$session" herdr pane get "$pane"` directly, WITHOUT the `--session` flag.
 Per "Session targeting" above, `HERDR_SESSION` alone is not reliably honored once another herdr server is already bound on the machine - it silently falls back to whatever server IS running.
@@ -639,14 +639,54 @@ The luminance rule assumes a dark terminal theme (the fleet reality); the SGR-2 
 `tests/fm-composer-ghost.test.sh` pins `fm_composer_strip_ghost` directly for both dim and dark-truecolor ghost, and its two prior "keep truecolor" fixtures were corrected from a near-black `38;2;1;2;3` (never a realistic real-input colour; it was only exercising the truecolor payload-skip parser) to a bright `38;2;224;222;244`, which now represents realistic real input while still exercising the same parser path.
 `shellcheck bin/*.sh bin/backends/*.sh tests/*.sh` passes clean.
 
-**Out-of-scope, recommended as its own task: an out-of-band wedge alarm.** The max-defer wedge alarm (`inject_wedge_alarm`, `bin/fm-supervise-daemon.sh`) alarmed into the void all night because its only active signal is a tmux client status-line flash, skipped for herdr; on herdr it left only the passive `state/.subsuper-inject-wedged` marker the captain found in the morning.
-That belongs to the daemon alarm layer, not the composer classification layer, and touching `fm-supervise-daemon.sh` would collide with the concurrently-landing paused-state supervision PR; it is called out for a follow-up task (a backend-independent active alert - macOS `osascript` notification and/or `herdr notification` - gated behind a config flag and empirically verified).
+**Resolved: backend-independent wedge alarm.** The max-defer wedge alarm (`inject_wedge_alarm`, `bin/fm-supervise-daemon.sh`) formerly alarmed into the void because its only active signal was a tmux client status-line flash, skipped for herdr, leaving only the passive `state/.subsuper-inject-wedged` marker.
+It now also attempts a configurable active alert independent of the supervisor backend; [`wedge-alarm.md`](wedge-alarm.md) owns its channels and verification evidence.
+
+## Native `pane.agent_status_changed` push escalation (immediate blocked wake)
+
+Herdr exposes a native, push-based agent-state event stream, and firstmate folds it into the watcher so a crew entering `blocked` (waiting on the human at a permission/trust dialog, an interactive menu, or a wedged prompt) wakes its supervisor sub-second instead of after the ~240s stale-pane wedge timer.
+This is the follow-up the former "No `events.subscribe` native push" gap note deferred; it is now implemented.
+
+**Mechanism (one owner per contract).**
+`bin/fm-transition-lib.sh` owns the backend-neutral normalized-transition record shape and the single-owner status->action policy table (`fm_transition_policy`: `blocked`=actionable, `working`=absorb-and-clear-dedupe, `idle`/`done`=defer, anything else=fall back to polling).
+`bin/backends/herdr.sh` (`fm_backend_herdr_wait_transition`) subscribes to `pane.agent_status_changed` for this home's herdr panes over ONE raw `AF_UNIX` connection via `bin/backends/herdr-eventwait.py`, subscribing to ALL statuses (so `working` edges clear the per-pane dedupe marker) and returning the first fresh `blocked` edge; after the subscription acknowledgement it level-reconciles each pane's current state while the stream remains live, so a pane that went blocked during the gap is caught once and transitions during reconciliation are buffered.
+`bin/fm-watch.sh` splices this in as the watcher's terminal wait (`event_wait_or_sleep`, replacing the blind `sleep POLL` for push-capable homes): on a returned `blocked` it maps `pane_id -> <session>:<pane_id> -> task`, exempts `kind=secondmate` endpoints and declared `paused:` waits, and enqueues an immediate `stale` wake.
+There is no second watcher process: the reader is a short-lived subprocess of the single watcher, so the "exactly one live supervision cycle" invariant and every guard/beacon/arm/turn-end mechanism are unchanged.
+
+**Polling is the permanent fail-closed backstop.**
+The watcher's poll loop runs every cycle regardless, so the event path only ever shortens latency and can never drop an escalation.
+Three documented triggers fall back to pure polling (`fm_backend_herdr_events_capable` and the watcher's runtime-disable counter): a build below protocol 16 or missing the events surface in `herdr api schema`; a connect/subscribe failure; and repeated runtime failures, which disable the fast path for the rest of that watcher process (a restart re-probes).
+
+**Empirical evidence (2026-07-11, herdr 0.7.3, protocol 16, macOS aarch64 Darwin 25.5.0, python3 3.13, jq present).**
+Capability, verified read-only:
+
+```
+$ herdr --version
+herdr 0.7.3
+
+$ herdr status --json | jq -c '{client:.client.protocol, server:.server.protocol}'
+{"client":16,"server":16}
+
+$ herdr api schema --json | jq -c '.schemas.subscription_event["$defs"].SubscriptionEventKind.enum'
+["pane.output_matched","pane.agent_status_changed","pane.scroll_changed"]
+```
+
+Live `idle -> blocked` transition, driven in an ISOLATED never-default lab session (`tests/fm-backend-herdr-eventwait-smoke.test.sh` via `bin/fm-herdr-lab.sh`, fleet-state tripwire clean before and after):
+
+```
+# register the pane's agent idle, background the bounded subscriber wait, then:
+$ herdr pane report-agent <pane> --source fm-evwait-test --agent claude --state blocked --session <lab>
+# fm_backend_herdr_wait_transition returns:
+ok - real herdr (herdr 0.7.3): events.subscribe capability gate passes (protocol >= 16, events surface present in api schema)
+ok - real herdr (herdr 0.7.3): a driven idle->blocked transition returns the blocked record in 0.129s (pane w1:p2)
+ok - real herdr: the watcher fast-path enqueues a stale wake naming the task window from the live blocked transition
+```
+
+The subscriber returned the `blocked` transition in **0.129s** and the watcher fast-path enqueued a durable `stale` wake naming the task window - versus up to `FM_POLL` (15s) plus `FM_STALE_ESCALATE_SECS` (240s) on the poll path this shortcuts.
+Dedupe (one wake per `->blocked` edge, marker cleared when the pane returns to `working`), subscribe-then-reconcile ordering (an already-blocked pane enqueued exactly once while newer edges buffer in the active stream), the `kind=secondmate`/`paused:` exemptions, and the three fail-closed fallbacks are covered by the fake-CLI unit tests in `tests/fm-backend-herdr.test.sh` (the `wait_transition`/`apply_transition` cases), `tests/fm-transition-lib.test.sh`, and `tests/fm-supervision-events.test.sh`.
 
 ## Known gaps and follow-up notes
 
-- **No `events.subscribe` native push.** The busy-state semantic read (`agent.get`) is consumed through the EXISTING `fm-watch.sh` poll loop (same 15-second cadence as every other window), not a persistent async subscriber pushing events directly into the wake queue.
-  This satisfies the adopted design's "polling remains as the reconciliation backstop" language without a separate watcher rewrite; herdr tasks already get materially better busy-state accuracy than tmux's regex guessing from this alone.
-  A genuine `events.subscribe`-driven push is a reasonable follow-up, not implemented here.
 - **Backend-specific bootstrap detection is absent.** `bin/fm-bootstrap.sh` still requires `tmux` outside Orca mode, and does not yet conditionally add `herdr` and `jq` when a backend selection resolves to herdr.
   The version/tool gate happens at spawn time instead and refuses loudly, so this is bootstrap-detection polish, not a functional gap.
 - **RESOLVED: worktree-discovery isolation guard's symlinked-project-prefix false refusal.** Originally discovered while building the runtime-backend-auto-detection real smoke test (`tests/fm-backend-autodetect-smoke.test.sh`), which needed a scratch project.
