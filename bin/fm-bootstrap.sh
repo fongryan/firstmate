@@ -276,6 +276,15 @@ secondmate_liveness_sweep() {
   # explicitly out of scope here.
   [ -d "$STATE" ] || return 0
   local meta id window harness backend target verdict out
+  local respawn_budget attempted succeeded failed skipped_budget
+  respawn_budget=${FM_SECOND_MATE_RESPAWN_BUDGET:-2}
+  case "$respawn_budget" in
+    ''|*[!0-9]*|0) respawn_budget=2 ;;
+  esac
+  attempted=0
+  succeeded=0
+  failed=0
+  skipped_budget=0
   for meta in "$STATE"/*.meta; do
     [ -f "$meta" ] || continue
     grep -q '^kind=secondmate$' "$meta" 2>/dev/null || continue
@@ -296,10 +305,17 @@ secondmate_liveness_sweep() {
         echo "SECONDMATE_LIVENESS: secondmate $id: already-live"
         ;;
       dead)
+        if [ "$attempted" -ge "$respawn_budget" ]; then
+          skipped_budget=$((skipped_budget + 1))
+          continue
+        fi
+        attempted=$((attempted + 1))
         fm_backend_kill "$backend" "$target" 2>/dev/null || true
         if out=$(FM_SPAWN_NO_GUARD=1 "$FM_ROOT/bin/fm-spawn.sh" "$id" --secondmate 2>&1); then
+          succeeded=$((succeeded + 1))
           echo "SECONDMATE_LIVENESS: secondmate $id: respawned"
         else
+          failed=$((failed + 1))
           echo "SECONDMATE_LIVENESS: secondmate $id: respawn failed: $(first_line "$out")"
         fi
         ;;
@@ -308,6 +324,9 @@ secondmate_liveness_sweep() {
         ;;
     esac
   done
+  if [ "$skipped_budget" -gt 0 ]; then
+    echo "SECONDMATE_LIVENESS: recovery budget exhausted (budget=$respawn_budget attempted=$attempted succeeded=$succeeded failed=$failed skipped=$skipped_budget)"
+  fi
   return 0
 }
 

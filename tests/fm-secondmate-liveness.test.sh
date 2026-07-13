@@ -386,6 +386,28 @@ test_sweep_noop_with_no_secondmate_meta() {
   pass "sweep: a silent no-op with no kind=secondmate meta present (a secondmate home's own natural scoping)"
 }
 
+test_sweep_respects_respawn_budget_and_reports_partial_recovery() {
+  local w fb tmuxfb log out i
+  w=$(new_world sweep-budget)
+  i=1
+  while [ "$i" -le 4 ]; do
+    add_sm_home "$w" "sm$i" "firstmate:fm-sm$i"
+    i=$((i + 1))
+  done
+  fb=$(make_toolchain "$w"); tmuxfb=$(make_liveness_tmux "$w")
+  log="$w/calls.log"; : > "$log"
+
+  out=$(run_bootstrap "$tmuxfb:$fb" "$w/home" zsh "$log" FM_SECOND_MATE_RESPAWN_BUDGET=2)
+
+  [ "$(grep -c '^kill-window ' "$log" || true)" -eq 2 ] \
+    || fail "a bootstrap recovery budget of 2 must kill at most two stale endpoints: $(cat "$log")"
+  assert_contains "$out" "SECONDMATE_LIVENESS: recovery budget exhausted" \
+    "bounded recovery must report that the remaining stale endpoints were skipped"
+  assert_contains "$out" "attempted=2" \
+    "bounded recovery must report the number of attempted respawns"
+  pass "sweep: bounded recovery stops after its configured respawn budget and reports partial state"
+}
+
 test_tmux_agent_alive_classifies
 test_herdr_agent_alive_maps_pane_agent_state
 test_agent_alive_dispatcher_routes_and_falls_back
@@ -396,5 +418,6 @@ test_sweep_never_acts_on_unverified_harness_dead_reading
 test_sweep_converges_no_retouch_once_alive
 test_sweep_skipped_under_detect_only
 test_sweep_noop_with_no_secondmate_meta
+test_sweep_respects_respawn_budget_and_reports_partial_recovery
 
 echo "# all fm-secondmate-liveness tests passed"
