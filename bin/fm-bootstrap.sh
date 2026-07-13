@@ -3,7 +3,9 @@
 # Usage: fm-bootstrap.sh
 #          Detect: prints one line per problem or capability fact and exits 0.
 #          Silent = all good.
-#          Lines: "MISSING: <tool> (install: <command>)", "NEEDS_GH_AUTH",
+#          Lines: "MISSING: <tool> (install: <command>)",
+#                 "MISSING_MANUAL: <tool> (instructions: <url>)", "NEEDS_GH_AUTH",
+#                 "BACKEND_INVALID: <name> (known: <names>)",
 #                 "CREW_HARNESS_OVERRIDE: <name>",
 #                 "CREW_DISPATCH: invalid config/crew-dispatch.json - <reason>",
 #                 "CREW_DISPATCH: active config/crew-dispatch.json" plus indented rules,
@@ -179,6 +181,12 @@ fleet_sync() {
   rm -f "$tmp"
 }
 
+fm_run_bounded() {
+  local seconds=$1
+  shift
+  perl -e 'my $t = shift; my $pid = fork; die "fork failed" unless defined $pid; if (!$pid) { setpgrp(0, 0); exec @ARGV } local $SIG{ALRM} = sub { kill "TERM", -$pid; select undef, undef, undef, 0.2; kill "KILL", -$pid; exit 124 }; alarm $t; waitpid $pid, 0; my $status = $?; exit(($status & 127) ? 128 + ($status & 127) : ($status >> 8))' "$seconds" "$@"
+}
+
 secondmate_sync() {
   # Local-HEAD secondmate sync: fast-forward every LIVE secondmate home
   # to the primary checkout's current default-branch commit. Purely LOCAL - no
@@ -273,10 +281,50 @@ secondmate_liveness_sweep() {
   # MID-SESSION is a harder follow-on needing a periodic liveness beacon -
   # explicitly out of scope here.
   [ -d "$STATE" ] || return 0
-  local meta id window harness backend target verdict out
+  local meta id window harness backend target verdict out probe_rc spawn_rc
+  local respawn_budget respawn_timeout liveness_timeout attempted succeeded failed skipped_budget
+  local cursor_id cursor_tmp start offset index count
+  local -a metas
+  metas=()
+  respawn_budget=${FM_SECOND_MATE_RESPAWN_BUDGET:-2}
+  case "$respawn_budget" in
+    ''|*[!0-9]*|0) respawn_budget=2 ;;
+  esac
+  respawn_timeout=${FM_SECOND_MATE_RESPAWN_TIMEOUT:-10}
+  case "$respawn_timeout" in
+    ''|*[!0-9]*|0) respawn_timeout=10 ;;
+  esac
+  liveness_timeout=${FM_SECOND_MATE_LIVENESS_TIMEOUT:-5}
+  case "$liveness_timeout" in
+    ''|*[!0-9]*|0) liveness_timeout=5 ;;
+  esac
+  attempted=0
+  succeeded=0
+  failed=0
+  skipped_budget=0
   for meta in "$STATE"/*.meta; do
     [ -f "$meta" ] || continue
     grep -q '^kind=secondmate$' "$meta" 2>/dev/null || continue
+    window=$(fm_meta_get "$meta" window)
+    [ -n "$window" ] || continue
+    metas[${#metas[@]}]="$meta"
+  done
+  count=${#metas[@]}
+  [ "$count" -gt 0 ] || return 0
+  cursor_id=$(cat "$STATE/.secondmate-liveness-cursor" 2>/dev/null || true)
+  start=0
+  if [ -n "$cursor_id" ]; then
+    for ((index = 0; index < count; index++)); do
+      id=$(basename "${metas[$index]}" .meta)
+      if [ "$id" = "$cursor_id" ]; then
+        start=$(((index + 1) % count))
+        break
+      fi
+    done
+  fi
+  for ((offset = 0; offset < count; offset++)); do
+    index=$(((start + offset) % count))
+    meta=${metas[$index]}
     id=$(basename "$meta" .meta)
     window=$(fm_meta_get "$meta" window)
     [ -n "$window" ] || continue
@@ -284,7 +332,16 @@ secondmate_liveness_sweep() {
     backend=$(fm_backend_of_meta "$meta")
     target=$(fm_backend_target_of_meta "$meta")
     [ -n "$target" ] || target="$window"
-    verdict=$(fm_backend_agent_alive "$backend" "$target" 2>/dev/null) || verdict="unknown"
+    if verdict=$(fm_run_bounded "$liveness_timeout" bash -c '. "$1"; fm_backend_agent_alive "$2" "$3"' _ "$SCRIPT_DIR/fm-backend.sh" "$backend" "$target" 2>/dev/null); then
+      probe_rc=0
+    else
+      probe_rc=$?
+    fi
+    if [ "$probe_rc" -eq 124 ]; then
+      verdict=timeout
+    elif [ "$probe_rc" -ne 0 ]; then
+      verdict=unknown
+    fi
     case "$harness" in
       claude|codex|opencode|pi|grok) ;;
       *) [ "$verdict" = dead ] && verdict=unknown ;;
@@ -293,12 +350,34 @@ secondmate_liveness_sweep() {
       alive)
         echo "SECONDMATE_LIVENESS: secondmate $id: already-live"
         ;;
+      timeout)
+        echo "SECONDMATE_LIVENESS: secondmate $id: skipped: liveness probe timed out (timeout=${liveness_timeout}s)"
+        ;;
       dead)
+        if [ "$attempted" -ge "$respawn_budget" ]; then
+          skipped_budget=$((skipped_budget + 1))
+          echo "SECONDMATE_LIVENESS: secondmate $id: skipped: recovery budget exhausted"
+          continue
+        fi
+        attempted=$((attempted + 1))
+        cursor_tmp=$(mktemp "$STATE/.secondmate-liveness-cursor.XXXXXX" 2>/dev/null || true)
+        if [ -n "$cursor_tmp" ]; then
+          printf '%s\n' "$id" > "$cursor_tmp"
+          mv -f "$cursor_tmp" "$STATE/.secondmate-liveness-cursor"
+        fi
         fm_backend_kill "$backend" "$target" 2>/dev/null || true
-        if out=$(FM_SPAWN_NO_GUARD=1 "$FM_ROOT/bin/fm-spawn.sh" "$id" --secondmate 2>&1); then
+        if out=$(fm_run_bounded "$respawn_timeout" env FM_SPAWN_NO_GUARD=1 "$FM_ROOT/bin/fm-spawn.sh" "$id" --secondmate 2>&1); then
+          succeeded=$((succeeded + 1))
           echo "SECONDMATE_LIVENESS: secondmate $id: respawned"
         else
-          echo "SECONDMATE_LIVENESS: secondmate $id: respawn failed: $(first_line "$out")"
+          spawn_rc=$?
+          if [ "$spawn_rc" -eq 124 ]; then
+            failed=$((failed + 1))
+            echo "SECONDMATE_LIVENESS: secondmate $id: respawn timed out (timeout=${respawn_timeout}s)"
+          else
+            failed=$((failed + 1))
+            echo "SECONDMATE_LIVENESS: secondmate $id: respawn failed: $(first_line "$out")"
+          fi
         fi
         ;;
       *)
@@ -306,12 +385,16 @@ secondmate_liveness_sweep() {
         ;;
     esac
   done
+  if [ "$skipped_budget" -gt 0 ]; then
+    echo "SECONDMATE_LIVENESS: recovery budget exhausted (budget=$respawn_budget attempted=$attempted succeeded=$succeeded failed=$failed skipped=$skipped_budget)"
+  fi
   return 0
 }
 
 install_cmd() {
   case "$1" in
-    tmux|node|gh|curl|jq|orca) echo "brew install $1  # or the platform's package manager" ;;
+    tmux|node|git|gh|curl|jq|orca|zellij) echo "brew install $1  # or the platform's package manager" ;;
+    cmux) echo "brew install --cask cmux  # or see https://cmux.com" ;;
     treehouse) echo "curl -fsSL https://kunchenguid.github.io/treehouse/install.sh | sh" ;;
     no-mistakes) echo "curl -fsSL https://raw.githubusercontent.com/kunchenguid/no-mistakes/main/docs/install.sh | sh" ;;
     gh-axi|chrome-devtools-axi|lavish-axi) echo "npm install -g $1 && $1 setup hooks" ;;
@@ -320,11 +403,35 @@ install_cmd() {
   esac
 }
 
+manual_install_url() {
+  case "$1" in
+    herdr) echo "https://herdr.dev" ;;
+    *) return 1 ;;
+  esac
+}
+
+missing_tool_diagnostic() {
+  local tool=$1 instructions
+  if instructions=$(manual_install_url "$tool"); then
+    echo "MISSING_MANUAL: $tool (instructions: $instructions)"
+    return 0
+  fi
+  echo "MISSING: $tool (install: $(install_cmd "$tool"))"
+}
+
+# Required-tool detection follows the RESOLVED backend, not a one-size default:
+# a universal toolchain every home needs plus the backend-specific delta owned by
+# fm_backend_required_tools (bin/fm-backend.sh). So a herdr/zellij/cmux home is
+# never told tmux is missing, and only orca drops treehouse. A backend value with
+# no verified dependency set is reported before the universal checks continue.
+COMMON_TOOLS="node git gh no-mistakes gh-axi chrome-devtools-axi lavish-axi tasks-axi quota-axi"
 BACKEND=$(fm_backend_name)
-case "$BACKEND" in
-  orca) TOOLS="orca node gh no-mistakes gh-axi chrome-devtools-axi lavish-axi tasks-axi quota-axi" ;;
-  *) TOOLS="tmux node gh treehouse no-mistakes gh-axi chrome-devtools-axi lavish-axi tasks-axi quota-axi" ;;
-esac
+BACKEND_VALID=1
+if ! BACKEND_TOOLS=$(fm_backend_required_tools "$BACKEND"); then
+  BACKEND_VALID=0
+  BACKEND_TOOLS=""
+fi
+TOOLS="$BACKEND_TOOLS $COMMON_TOOLS"
 NO_MISTAKES_MIN_MAJOR=1
 NO_MISTAKES_MIN_MINOR=31
 NO_MISTAKES_MIN_PATCH=2
@@ -547,7 +654,11 @@ if [ "${1:-}" = "install" ]; then
   shift
   [ $# -gt 0 ] || { echo "usage: fm-bootstrap.sh install <tool>..." >&2; exit 1; }
   for t in "$@"; do
-    cmd=$(install_cmd "$t") || { echo "error: unknown tool $t" >&2; exit 1; }
+    if ! cmd=$(install_cmd "$t"); then
+      instructions=$(manual_install_url "$t") || { echo "error: unknown tool $t" >&2; exit 1; }
+      echo "error: $t requires manual installation (instructions: $instructions)" >&2
+      exit 1
+    fi
     cmd=${cmd%%  #*}
     echo "installing $t: $cmd"
     eval "$cmd"
@@ -555,10 +666,21 @@ if [ "${1:-}" = "install" ]; then
   exit 0
 fi
 
-for t in $TOOLS; do
-  command -v "$t" >/dev/null || echo "MISSING: $t (install: $(install_cmd "$t"))"
+if [ "$BACKEND_VALID" -eq 0 ]; then
+  echo "BACKEND_INVALID: $BACKEND (known: $FM_BACKEND_KNOWN)"
+fi
+for t in $BACKEND_TOOLS; do
+  fm_backend_required_tool_available "$BACKEND" "$t" \
+    || missing_tool_diagnostic "$t"
 done
-if command -v treehouse >/dev/null 2>&1 && ! treehouse_supports_lease; then
+for t in $COMMON_TOOLS; do
+  command -v "$t" >/dev/null || missing_tool_diagnostic "$t"
+done
+# The treehouse lease-support upgrade check is only relevant when the resolved
+# backend actually requires treehouse (every backend except orca, which owns its
+# own worktrees); an orca home must not be told to upgrade a provider it never uses.
+if fm_backend_list_contains "$TOOLS" treehouse \
+  && command -v treehouse >/dev/null 2>&1 && ! treehouse_supports_lease; then
   echo "MISSING: treehouse (install: $(install_cmd treehouse))"
 fi
 if command -v no-mistakes >/dev/null 2>&1 && ! no_mistakes_compatible; then
