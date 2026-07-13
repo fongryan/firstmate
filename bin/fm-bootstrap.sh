@@ -184,7 +184,7 @@ fleet_sync() {
 fm_run_bounded() {
   local seconds=$1
   shift
-  perl -e 'my $t = shift; my $pid = fork; die "fork failed" unless defined $pid; if (!$pid) { setpgrp(0, 0); exec @ARGV } local $SIG{ALRM} = sub { kill "TERM", -$pid; select undef, undef, undef, 0.2; kill "KILL", -$pid; exit 124 }; alarm $t; waitpid $pid, 0; exit($? >> 8)' "$seconds" "$@"
+  perl -e 'my $t = shift; my $pid = fork; die "fork failed" unless defined $pid; if (!$pid) { setpgrp(0, 0); exec @ARGV } local $SIG{ALRM} = sub { kill "TERM", -$pid; select undef, undef, undef, 0.2; kill "KILL", -$pid; exit 124 }; alarm $t; waitpid $pid, 0; my $status = $?; exit(($status & 127) ? 128 + ($status & 127) : ($status >> 8))' "$seconds" "$@"
 }
 
 secondmate_sync() {
@@ -332,8 +332,11 @@ secondmate_liveness_sweep() {
     backend=$(fm_backend_of_meta "$meta")
     target=$(fm_backend_target_of_meta "$meta")
     [ -n "$target" ] || target="$window"
-    verdict=$(fm_run_bounded "$liveness_timeout" bash -c '. "$1"; fm_backend_agent_alive "$2" "$3"' _ "$SCRIPT_DIR/fm-backend.sh" "$backend" "$target" 2>/dev/null)
-    probe_rc=$?
+    if verdict=$(fm_run_bounded "$liveness_timeout" bash -c '. "$1"; fm_backend_agent_alive "$2" "$3"' _ "$SCRIPT_DIR/fm-backend.sh" "$backend" "$target" 2>/dev/null); then
+      probe_rc=0
+    else
+      probe_rc=$?
+    fi
     if [ "$probe_rc" -eq 124 ]; then
       verdict=timeout
     elif [ "$probe_rc" -ne 0 ]; then

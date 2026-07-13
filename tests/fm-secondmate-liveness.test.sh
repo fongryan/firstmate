@@ -429,6 +429,18 @@ test_sweep_bounds_probe_and_spawn_timeouts() {
   pass "sweep: liveness probes and respawns are individually time-bounded"
 }
 
+test_bounded_runner_preserves_signal_failure() {
+  local bounded rc
+  bounded=$(sed -n '/^fm_run_bounded() {/,/^}/p' "$ROOT/bin/fm-bootstrap.sh")
+  eval "$bounded"
+  set +e
+  fm_run_bounded 2 bash -c 'kill -TERM $$' >/dev/null 2>&1
+  rc=$?
+  set -u
+  [ "$rc" -ge 128 ] || fail "a bounded child terminated by signal must remain a failure (rc=$rc)"
+  pass "fm_run_bounded preserves signaled child failures"
+}
+
 test_sweep_rotates_after_cursor() {
   local w fb tmuxfb log out
   w=$(new_world sweep-rotation)
@@ -457,6 +469,7 @@ test_sweep_skipped_under_detect_only
 test_sweep_noop_with_no_secondmate_meta
 test_sweep_respects_respawn_budget_and_reports_partial_recovery
 test_sweep_bounds_probe_and_spawn_timeouts
+test_bounded_runner_preserves_signal_failure
 test_sweep_rotates_after_cursor
 
 echo "# all fm-secondmate-liveness tests passed"
