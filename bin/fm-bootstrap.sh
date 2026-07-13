@@ -181,6 +181,12 @@ fleet_sync() {
   rm -f "$tmp"
 }
 
+fm_run_bounded() {
+  local seconds=$1
+  shift
+  perl -e 'my $t = shift; my $pid = fork; die "fork failed" unless defined $pid; if (!$pid) { setpgrp(0, 0); exec @ARGV } local $SIG{ALRM} = sub { kill "TERM", -$pid; select undef, undef, undef, 0.2; kill "KILL", -$pid; exit 124 }; alarm $t; waitpid $pid, 0; exit($? >> 8)' "$seconds" "$@"
+}
+
 secondmate_sync() {
   # Local-HEAD secondmate sync: fast-forward every LIVE secondmate home
   # to the primary checkout's current default-branch commit. Purely LOCAL - no
@@ -275,11 +281,22 @@ secondmate_liveness_sweep() {
   # MID-SESSION is a harder follow-on needing a periodic liveness beacon -
   # explicitly out of scope here.
   [ -d "$STATE" ] || return 0
-  local meta id window harness backend target verdict out
-  local respawn_budget attempted succeeded failed skipped_budget
+  local meta id window harness backend target verdict out probe_rc spawn_rc
+  local respawn_budget respawn_timeout liveness_timeout attempted succeeded failed skipped_budget
+  local cursor_id cursor_tmp start offset index count
+  local -a metas
+  metas=()
   respawn_budget=${FM_SECOND_MATE_RESPAWN_BUDGET:-2}
   case "$respawn_budget" in
     ''|*[!0-9]*|0) respawn_budget=2 ;;
+  esac
+  respawn_timeout=${FM_SECOND_MATE_RESPAWN_TIMEOUT:-10}
+  case "$respawn_timeout" in
+    ''|*[!0-9]*|0) respawn_timeout=10 ;;
+  esac
+  liveness_timeout=${FM_SECOND_MATE_LIVENESS_TIMEOUT:-5}
+  case "$liveness_timeout" in
+    ''|*[!0-9]*|0) liveness_timeout=5 ;;
   esac
   attempted=0
   succeeded=0
@@ -288,6 +305,26 @@ secondmate_liveness_sweep() {
   for meta in "$STATE"/*.meta; do
     [ -f "$meta" ] || continue
     grep -q '^kind=secondmate$' "$meta" 2>/dev/null || continue
+    window=$(fm_meta_get "$meta" window)
+    [ -n "$window" ] || continue
+    metas[${#metas[@]}]="$meta"
+  done
+  count=${#metas[@]}
+  [ "$count" -gt 0 ] || return 0
+  cursor_id=$(cat "$STATE/.secondmate-liveness-cursor" 2>/dev/null || true)
+  start=0
+  if [ -n "$cursor_id" ]; then
+    for ((index = 0; index < count; index++)); do
+      id=$(basename "${metas[$index]}" .meta)
+      if [ "$id" = "$cursor_id" ]; then
+        start=$(((index + 1) % count))
+        break
+      fi
+    done
+  fi
+  for ((offset = 0; offset < count; offset++)); do
+    index=$(((start + offset) % count))
+    meta=${metas[$index]}
     id=$(basename "$meta" .meta)
     window=$(fm_meta_get "$meta" window)
     [ -n "$window" ] || continue
@@ -295,7 +332,13 @@ secondmate_liveness_sweep() {
     backend=$(fm_backend_of_meta "$meta")
     target=$(fm_backend_target_of_meta "$meta")
     [ -n "$target" ] || target="$window"
-    verdict=$(fm_backend_agent_alive "$backend" "$target" 2>/dev/null) || verdict="unknown"
+    verdict=$(fm_run_bounded "$liveness_timeout" bash -c '. "$1"; fm_backend_agent_alive "$2" "$3"' _ "$SCRIPT_DIR/fm-backend.sh" "$backend" "$target" 2>/dev/null)
+    probe_rc=$?
+    if [ "$probe_rc" -eq 124 ]; then
+      verdict=timeout
+    elif [ "$probe_rc" -ne 0 ]; then
+      verdict=unknown
+    fi
     case "$harness" in
       claude|codex|opencode|pi|grok) ;;
       *) [ "$verdict" = dead ] && verdict=unknown ;;
@@ -304,19 +347,34 @@ secondmate_liveness_sweep() {
       alive)
         echo "SECONDMATE_LIVENESS: secondmate $id: already-live"
         ;;
+      timeout)
+        echo "SECONDMATE_LIVENESS: secondmate $id: skipped: liveness probe timed out (timeout=${liveness_timeout}s)"
+        ;;
       dead)
         if [ "$attempted" -ge "$respawn_budget" ]; then
           skipped_budget=$((skipped_budget + 1))
+          echo "SECONDMATE_LIVENESS: secondmate $id: skipped: recovery budget exhausted"
           continue
         fi
         attempted=$((attempted + 1))
+        cursor_tmp=$(mktemp "$STATE/.secondmate-liveness-cursor.XXXXXX" 2>/dev/null || true)
+        if [ -n "$cursor_tmp" ]; then
+          printf '%s\n' "$id" > "$cursor_tmp"
+          mv -f "$cursor_tmp" "$STATE/.secondmate-liveness-cursor"
+        fi
         fm_backend_kill "$backend" "$target" 2>/dev/null || true
-        if out=$(FM_SPAWN_NO_GUARD=1 "$FM_ROOT/bin/fm-spawn.sh" "$id" --secondmate 2>&1); then
+        if out=$(fm_run_bounded "$respawn_timeout" env FM_SPAWN_NO_GUARD=1 "$FM_ROOT/bin/fm-spawn.sh" "$id" --secondmate 2>&1); then
           succeeded=$((succeeded + 1))
           echo "SECONDMATE_LIVENESS: secondmate $id: respawned"
         else
-          failed=$((failed + 1))
-          echo "SECONDMATE_LIVENESS: secondmate $id: respawn failed: $(first_line "$out")"
+          spawn_rc=$?
+          if [ "$spawn_rc" -eq 124 ]; then
+            failed=$((failed + 1))
+            echo "SECONDMATE_LIVENESS: secondmate $id: respawn timed out (timeout=${respawn_timeout}s)"
+          else
+            failed=$((failed + 1))
+            echo "SECONDMATE_LIVENESS: secondmate $id: respawn failed: $(first_line "$out")"
+          fi
         fi
         ;;
       *)
