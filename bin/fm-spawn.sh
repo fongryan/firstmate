@@ -711,6 +711,21 @@ fi
 
  if [ "$KIND" != secondmate ] && [ "$BACKEND" != orca ]; then
   WT=$(fm_git_worktree_create "$PROJ_ABS" "$ID") || exit 1
+  # The Git worktree exists before the selected backend creates its task
+  # window/tab/surface. Keep a narrow EXIT cleanup until lifecycle metadata is
+  # registered; otherwise a backend admission failure leaks an unowned
+  # worktree that no reaper can discover.
+  SPAWN_WORKTREE_CLEANUP_PENDING=1
+  git_worktree_spawn_abort_cleanup() {
+    local spawn_status=$?
+    if [ "${SPAWN_WORKTREE_CLEANUP_PENDING:-0}" = 1 ] \
+      && [ ! -f "$STATE/$ID.meta" ] \
+      && [ -n "${WT:-}" ]; then
+      fm_git_worktree_remove "$PROJ_ABS" "$WT" 1 >/dev/null 2>&1 || true
+    fi
+    return "$spawn_status"
+  }
+  trap git_worktree_spawn_abort_cleanup EXIT
  fi
 
 # PROJ_ABS can still carry a symlinked path component (e.g. macOS's /tmp ->
@@ -1083,6 +1098,8 @@ FM_STATE_OVERRIDE="$STATE" FM_LIFECYCLE_RESTORE=1 \
   "$SCRIPT_DIR/fm-lifecycle.sh" register "$ID" --state active \
   --repo "$ADMISSION_REPO" --owner "$ID" --branch "$LIFECYCLE_BRANCH" \
   --worktree "$WT" --objective "$OBJECTIVE" >/dev/null
+SPAWN_WORKTREE_CLEANUP_PENDING=0
+trap - EXIT
 
 sq_brief=$(shell_quote "$BRIEF")
 sq_turnend=$(shell_quote "$TURNEND")

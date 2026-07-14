@@ -60,5 +60,21 @@ test_interrupted_task_can_be_explicitly_restarted() {
   pass "only explicit restore can restart interrupted work"
 }
 
+test_live_endpoint_protection_skips_stale_record() {
+  register live-endpoint active 5000
+  local out
+  out=$(FM_STATE_OVERRIDE="$STATE" FM_LIFECYCLE_NOW=5020 \
+    FM_LIFECYCLE_PROTECTED_IDS=live-endpoint "$REAPER" --apply) \
+    || fail "protected apply failed"
+  assert_grep 'action=protected' <(printf '%s\n' "$out") \
+    "reaper did not report the live endpoint protection"
+  assert_grep 'state=active' "$STATE/live-endpoint.lifecycle" \
+    "live endpoint protection reaped an active record"
+  [ "$(wc -l < "$STATE/live-endpoint.events" | tr -d ' ')" = 1 ] \
+    || fail "protected record unexpectedly received a transition"
+  pass "reaper protects records whose endpoint was observed alive during session start"
+}
+
 test_dry_run_is_non_mutating_and_apply_is_idempotent
 test_interrupted_task_can_be_explicitly_restarted
+test_live_endpoint_protection_skips_stale_record
