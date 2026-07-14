@@ -1076,9 +1076,11 @@ META_WINDOW=$T
 # resolved, but before launching the harness. A launch failure therefore leaves
 # a receipt-backed active record for the autonomous reaper instead of an
 # invisible orphan. Restore mode is restricted to this trusted spawn adapter.
+LIFECYCLE_BRANCH=$(git -C "$WT" symbolic-ref --short -q HEAD 2>/dev/null || true)
+[ -n "$LIFECYCLE_BRANCH" ] || LIFECYCLE_BRANCH=detached
 FM_STATE_OVERRIDE="$STATE" FM_LIFECYCLE_RESTORE=1 \
   "$SCRIPT_DIR/fm-lifecycle.sh" register "$ID" --state active \
-  --repo "$ADMISSION_REPO" --owner "$ID" --branch "$(git -C "$WT" branch --show-current 2>/dev/null || printf 'detached')" \
+  --repo "$ADMISSION_REPO" --owner "$ID" --branch "$LIFECYCLE_BRANCH" \
   --worktree "$WT" --objective "$OBJECTIVE" >/dev/null
 
 sq_brief=$(shell_quote "$BRIEF")
