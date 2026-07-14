@@ -34,6 +34,7 @@ fm_git_identity fmtest fmtest@example.invalid
 . "$ROOT/bin/fm-backend.sh"
 
 TMP_ROOT=$(fm_test_tmproot fm-backend-tests)
+export FM_WORKTREE_ROOT="$TMP_ROOT/worktrees"
 
 # fm_backend_detect's cmux fallback (bundle id + process ancestry,
 # docs/cmux-backend.md "Runtime auto-detection") consults uname, lsappinfo,
@@ -859,7 +860,7 @@ run_spawn_symlink_case() {  # <label> <physical|logical>
   out=$(run_spawn_case "$ROOT" "$fb" "$log" "$state" "$data" "$config" "$proj" -- "$id" "$proj" claude 2>&1)
   rc=$?
   expect_code 0 "$rc" "fm-spawn.sh should succeed for a project reached through a symlinked prefix when the backend reports $first_reply cwd"$'\n'"$out"
-  expected_wt="$TMP_ROOT/worktrees/$(basename "$(cd "$proj" && pwd -P)")/$id"
+  expected_wt="$(cd "$TMP_ROOT/worktrees" && pwd -P)/$id"
   assert_contains "$out" "worktree=$expected_wt" \
     "fm-spawn.sh did not create the direct Git worktree under the real project when the backend reports $first_reply cwd"
 
@@ -979,6 +980,7 @@ test_spawn_default_backend_writes_no_meta_field() {
 
   out=$(PATH="$fb:$PATH" FM_ROOT_OVERRIDE="$ROOT" \
     FM_STATE_OVERRIDE="$state" FM_DATA_OVERRIDE="$data" FM_CONFIG_OVERRIDE="$config" \
+    FM_WORKTREE_ROOT="$TMP_ROOT/worktrees" \
     FM_PROJECTS_OVERRIDE="$TMP_ROOT/unused-projects" FM_SPAWN_NO_GUARD=1 TMUX="fake,1,0" \
     FM_TMUX_LOG="$TMP_ROOT/nobackend.log" \
     "$ROOT/bin/fm-spawn.sh" "$id" "$proj" claude --backend tmux 2>&1)
