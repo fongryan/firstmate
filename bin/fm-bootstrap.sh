@@ -41,8 +41,8 @@
 #          A TANGLE line means the firstmate primary checkout (FM_ROOT) is stranded
 #          on a feature branch instead of its default branch - a crewmate's work
 #          landed in the primary instead of its own worktree; restore it per the line.
-#          treehouse is also MISSING when its installed version lacks
-#          "treehouse get --lease" support.
+#          Git linked worktrees are managed directly by Firstmate; no pool or
+#          lease provider is required.
 #          no-mistakes is also MISSING when its installed version is older than
 #          1.31.2.
 #          tasks-axi and quota-axi are required bootstrap tools (same class as
@@ -395,7 +395,6 @@ install_cmd() {
   case "$1" in
     tmux|node|git|gh|curl|jq|orca|zellij) echo "brew install $1  # or the platform's package manager" ;;
     cmux) echo "brew install --cask cmux  # or see https://cmux.com" ;;
-    treehouse) echo "curl -fsSL https://kunchenguid.github.io/treehouse/install.sh | sh" ;;
     no-mistakes) echo "curl -fsSL https://raw.githubusercontent.com/kunchenguid/no-mistakes/main/docs/install.sh | sh" ;;
     gh-axi|chrome-devtools-axi|lavish-axi) echo "npm install -g $1 && $1 setup hooks" ;;
     tasks-axi|quota-axi) echo "npm install -g $1" ;;
@@ -422,8 +421,9 @@ missing_tool_diagnostic() {
 # Required-tool detection follows the RESOLVED backend, not a one-size default:
 # a universal toolchain every home needs plus the backend-specific delta owned by
 # fm_backend_required_tools (bin/fm-backend.sh). So a herdr/zellij/cmux home is
-# never told tmux is missing, and only orca drops treehouse. A backend value with
-# no verified dependency set is reported before the universal checks continue.
+# never told tmux is missing, and Orca remains the only backend with its own
+# worktree API. A backend value with no verified dependency set is reported
+# before the universal checks continue.
 COMMON_TOOLS="node git gh no-mistakes gh-axi chrome-devtools-axi lavish-axi tasks-axi quota-axi"
 BACKEND=$(fm_backend_name)
 BACKEND_VALID=1
@@ -435,10 +435,6 @@ TOOLS="$BACKEND_TOOLS $COMMON_TOOLS"
 NO_MISTAKES_MIN_MAJOR=1
 NO_MISTAKES_MIN_MINOR=31
 NO_MISTAKES_MIN_PATCH=2
-
-treehouse_supports_lease() {
-  treehouse get --help 2>&1 | grep -Eq '(^|[^[:alnum:]_-])--lease([^[:alnum:]_-]|$)'
-}
 
 no_mistakes_version_parts() {
   local output
@@ -676,13 +672,6 @@ done
 for t in $COMMON_TOOLS; do
   command -v "$t" >/dev/null || missing_tool_diagnostic "$t"
 done
-# The treehouse lease-support upgrade check is only relevant when the resolved
-# backend actually requires treehouse (every backend except orca, which owns its
-# own worktrees); an orca home must not be told to upgrade a provider it never uses.
-if fm_backend_list_contains "$TOOLS" treehouse \
-  && command -v treehouse >/dev/null 2>&1 && ! treehouse_supports_lease; then
-  echo "MISSING: treehouse (install: $(install_cmd treehouse))"
-fi
 if command -v no-mistakes >/dev/null 2>&1 && ! no_mistakes_compatible; then
   echo "MISSING: no-mistakes (install: $(install_cmd no-mistakes))"
 fi

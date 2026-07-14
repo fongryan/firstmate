@@ -762,7 +762,7 @@ run_spawn_case() {  # <bin-root> <fakebin> <log> <state> <data> <config> <proj> 
   local bin=$1 fb=$2 log=$3 state=$4 data=$5 config=$6 proj=$7; shift 7
   [ "${1:-}" = -- ] && shift
   : > "$log"
-  env PATH="$fb:$PATH" FM_ROOT_OVERRIDE="$bin" \
+  env PATH="$fb:$PATH" FM_ROOT_OVERRIDE="$bin" FM_WORKTREE_ROOT="$TMP_ROOT/worktrees" \
     FM_STATE_OVERRIDE="$state" FM_DATA_OVERRIDE="$data" FM_CONFIG_OVERRIDE="$config" \
     FM_PROJECTS_OVERRIDE="$TMP_ROOT/unused-projects" \
     FM_SPAWN_NO_GUARD=1 TMUX="fake,1,0" FM_TMUX_LOG="$log" \
@@ -859,10 +859,10 @@ run_spawn_symlink_case() {  # <label> <physical|logical>
   out=$(run_spawn_case "$ROOT" "$fb" "$log" "$state" "$data" "$config" "$proj" -- "$id" "$proj" claude 2>&1)
   rc=$?
   expect_code 0 "$rc" "fm-spawn.sh should succeed for a project reached through a symlinked prefix when the backend reports $first_reply cwd"$'\n'"$out"
-  assert_contains "$out" "worktree=$wt" \
-    "fm-spawn.sh did not resolve a symlinked-prefix project to its real worktree when the backend reports $first_reply cwd"
+  expected_wt="$TMP_ROOT/worktrees/$(basename "$(cd "$proj" && pwd -P)")/$id"
+  assert_contains "$out" "worktree=$expected_wt" \
+    "fm-spawn.sh did not create the direct Git worktree under the real project when the backend reports $first_reply cwd"
 
-  rm -rf "/tmp/fm-$id"
 }
 
 test_spawn_symlinked_project_prefix_avoids_false_refusal() {
@@ -871,9 +871,9 @@ test_spawn_symlinked_project_prefix_avoids_false_refusal() {
   pass "fm-spawn.sh: a project reached through a symlinked prefix (e.g. macOS /tmp -> /private/tmp) does not trip the isolation guard's false refusal"
 }
 
-# --- old vs new: fm-teardown.sh ----------------------------------------------
+# --- Git worktree teardown ---------------------------------------------------
 
-make_teardown_fakebin() {  # <dir> -> echoes fakebin dir; logs tmux+treehouse calls
+make_teardown_fakebin() {  # <dir> -> echoes fakebin dir; logs tmux calls
   local dir=$1 fb="$1/fakebin"
   mkdir -p "$fb"
   cat > "$fb/tmux" <<'SH'
@@ -882,13 +882,7 @@ set -u
 { printf 'tmux'; for a in "$@"; do printf '\x1f%s' "$a"; done; printf '\n'; } >> "${FM_TMUX_LOG:?}"
 exit 0
 SH
-  cat > "$fb/treehouse" <<'SH'
-#!/usr/bin/env bash
-set -u
-{ printf 'treehouse'; for a in "$@"; do printf '\x1f%s' "$a"; done; printf '\n'; } >> "${FM_TMUX_LOG:?}"
-exit 0
-SH
-  chmod +x "$fb/tmux" "$fb/treehouse"
+  chmod +x "$fb/tmux"
   printf '%s\n' "$fb"
 }
 
@@ -907,10 +901,8 @@ run_teardown_case() {
     "$script" "$id"
 }
 
-test_teardown_conformance_old_vs_new() {
-  local old_bin fb proj wt id
-  local state_old state_new config_old config_new data log_old log_new out_old out_new rc_old rc_new
-  old_bin=$(build_old_bin teardown-old)
+test_teardown_uses_git_worktree_without_treehouse() {
+  local fb proj wt id state config data log out rc
   proj="$TMP_ROOT/teardown-project"; wt="$TMP_ROOT/teardown-wt"
   id="teardownconform1"
   fm_git_worktree "$proj" "$wt" "fm/$id"
@@ -920,32 +912,21 @@ test_teardown_conformance_old_vs_new() {
   mkdir -p "$data/$id"
   printf 'scout findings\n' > "$data/$id/report.md"
 
-  state_old="$TMP_ROOT/teardown-state-old"; state_new="$TMP_ROOT/teardown-state-new"
-  config_old="$TMP_ROOT/teardown-config-old"; config_new="$TMP_ROOT/teardown-config-new"
-  mkdir -p "$state_old" "$state_new" "$config_old" "$config_new"
-
-  fm_write_meta "$state_old/$id.meta" \
+  state="$TMP_ROOT/teardown-state"; config="$TMP_ROOT/teardown-config"
+  mkdir -p "$state" "$config"
+  fm_write_meta "$state/$id.meta" \
     "window=firstmate:fm-$id" "worktree=$wt" "project=$proj" "harness=claude" "kind=scout" "mode=no-mistakes" "yolo=off"
-  fm_write_meta "$state_new/$id.meta" \
-    "window=firstmate:fm-$id" "worktree=$wt" "project=$proj" "harness=claude" "kind=scout" "mode=no-mistakes" "yolo=off"
-  touch "$state_old/.last-watcher-beat" "$state_new/.last-watcher-beat"
+  touch "$state/.last-watcher-beat"
 
-  log_old="$TMP_ROOT/teardown-old.log"; log_new="$TMP_ROOT/teardown-new.log"
-  out_old=$(run_teardown_case "$old_bin/bin/fm-teardown.sh" "$old_bin" "$fb" "$log_old" "$state_old" "$data" "$config_old" "$id" 2>&1)
-  rc_old=$?
-  out_new=$(run_teardown_case "$ROOT/bin/fm-teardown.sh" "$old_bin" "$fb" "$log_new" "$state_new" "$data" "$config_new" "$id" 2>&1)
-  rc_new=$?
-
-  expect_code 0 "$rc_old" "old fm-teardown.sh (scout, report present) should succeed"$'\n'"$out_old"
-  expect_code 0 "$rc_new" "new fm-teardown.sh (scout, report present) should succeed"$'\n'"$out_new"
-  diff -u "$log_old" "$log_new" > "$TMP_ROOT/teardown-diff.txt" 2>&1 \
-    || fail "fm-teardown.sh: tmux+treehouse command log differs old vs new"$'\n'"$(cat "$TMP_ROOT/teardown-diff.txt")"
-  assert_contains "$(cat "$log_new")" "treehouse"$'\x1f''return'$'\x1f''--force'$'\x1f'"$wt" \
-    "teardown did not call treehouse return --force <worktree>"
-  assert_contains "$(cat "$log_new")" "tmux"$'\x1f''kill-window'$'\x1f''-t'$'\x1f'"firstmate:fm-$id" \
+  log="$TMP_ROOT/teardown.log"
+  out=$(run_teardown_case "$ROOT/bin/fm-teardown.sh" "$ROOT" "$fb" "$log" "$state" "$data" "$config" "$id" 2>&1)
+  rc=$?
+  expect_code 0 "$rc" "Git worktree teardown should succeed"$'\n'"$out"
+  [ ! -e "$wt" ] || fail "Git worktree path should be removed"
+  assert_not_contains "$(cat "$log")" "treehouse" "teardown must not invoke Treehouse"
+  assert_contains "$(cat "$log")" "tmux"$'\x1f''kill-window'$'\x1f''-t'$'\x1f'"firstmate:fm-$id" \
     "teardown did not call tmux kill-window -t <window>"
-
-  pass "fm-teardown.sh: treehouse return + tmux kill-window command log is byte-identical old vs new for a scout task"
+  pass "fm-teardown removes a registered Git worktree without Treehouse"
 }
 
 # --- backend selection loudly refuses an unknown backend --------------------
@@ -1082,7 +1063,7 @@ test_backend_of_selector_matches_explicit_target_meta
 test_send_conformance_old_vs_new
 test_peek_conformance_old_vs_new
 test_spawn_symlinked_project_prefix_avoids_false_refusal
-test_teardown_conformance_old_vs_new
+test_teardown_uses_git_worktree_without_treehouse
 test_spawn_refuses_unknown_backend_flag
 test_spawn_refuses_codex_app_backend_flag
 test_spawn_refuses_unknown_fm_backend_env
