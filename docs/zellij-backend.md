@@ -15,7 +15,7 @@ Prerequisites:
 
 - `zellij` itself, version 0.44 or newer (installed 0.44.0 verified) - see [zellij.dev](https://zellij.dev) for install instructions.
 - `jq`, required to parse zellij's JSON output: `brew install jq` (or your platform's package manager).
-- The universal firstmate prerequisites - a verified crew harness plus the required toolchain, owned by [`docs/configuration.md`](configuration.md) ("Harness support", "Toolchain"); treehouse still provides the worktree, zellij only provides the session.
+- The universal firstmate prerequisites - a verified crew harness plus the required toolchain, owned by [`docs/configuration.md`](configuration.md) ("Harness support", "Toolchain"); Firstmate creates the task's Git worktree directly, while zellij provides the session.
 
 Select zellij by putting `zellij` in a local `config/backend` file - the durable way to pick it - or by exporting `FM_BACKEND=zellij` when you launch your harness for a one-off session; telling the first mate in chat to use zellij also works.
 Unlike tmux and herdr, zellij is **never** auto-detected - it always requires an explicit choice.
@@ -41,10 +41,11 @@ Unlike tmux and herdr, zellij is **never** selected by runtime auto-detection: t
 Absent `backend=` in a task's meta always means `tmux`; only a zellij task ever carries an explicit `backend=zellij` line.
 A zellij spawn refuses loudly if `zellij` or `jq` is missing, or if the installed zellij's version is older than the verified minimum, 0.44 (`fm_backend_zellij_version_check`).
 
-## Worktree provider stays treehouse
+## Worktree provider: direct Git
 
-Zellij is a session provider only (D3, `data/fm-backend-design-d7/herdr-addendum.md`, restated for zellij in the same task).
-Treehouse remains the worktree provider, exactly as it is for tmux and herdr.
+Zellij is a session provider only.
+Firstmate creates and removes a registered detached Git worktree through
+`bin/fm-git-worktree.sh`, exactly as it does for tmux and herdr.
 
 ## Task container shape: one session, one tab per task
 

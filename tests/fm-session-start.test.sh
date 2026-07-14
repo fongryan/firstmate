@@ -422,7 +422,7 @@ SH
     assert_not_contains "$out" "MISSING: tmux" "Herdr session start falsely required masked tmux"
     assert_not_contains "$out" "MISSING: herdr" "Herdr session start missed its available session CLI"
     assert_not_contains "$out" "MISSING: jq" "Herdr session start missed its available JSON dependency"
-    assert_not_contains "$out" "MISSING: treehouse" "Herdr session start missed its available worktree provider"
+    assert_not_contains "$out" "MISSING: treehouse" "Herdr session start reported the retired Treehouse dependency"
   done
   pass "session start: configured and auto-detected Herdr homes never require tmux"
 }

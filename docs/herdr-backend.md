@@ -20,7 +20,7 @@ Prerequisites:
 
 - `herdr` itself, protocol 14 or newer (0.7.1 and 0.7.3 verified) - see [herdr.dev](https://herdr.dev) for install instructions.
 - `jq`, required to parse herdr's JSON output: `brew install jq` (or your platform's package manager).
-- The universal firstmate prerequisites - a verified crew harness plus the required toolchain, owned by [`docs/configuration.md`](configuration.md) ("Harness support", "Toolchain"); treehouse still provides the worktree, herdr only provides the session.
+- The universal firstmate prerequisites - a verified crew harness plus the required toolchain, owned by [`docs/configuration.md`](configuration.md) ("Harness support", "Toolchain"); Firstmate creates the task's Git worktree directly, while herdr provides the session.
 
 Select herdr by putting `herdr` in a local `config/backend` file - the durable way to pick it - or by exporting `FM_BACKEND=herdr` when you launch your harness for a one-off session; telling the first mate in chat to use herdr also works.
 It can also be auto-detected: when firstmate itself is running natively inside herdr (`HERDR_ENV=1`) and no explicit backend is set, firstmate auto-selects herdr and prints a one-time opt-out notice; running inside tmux nested in herdr always resolves to tmux instead.
@@ -52,11 +52,13 @@ Only when none of that resolves anything does firstmate fall back to the hard de
 Absent `backend=` in a task's meta always means `tmux`; a herdr task carries an explicit `backend=herdr` line, while other experimental adapters carry their own backend values.
 A herdr spawn refuses loudly if `herdr` or `jq` is missing, or if the installed herdr's protocol is older than the verified minimum (`fm_backend_herdr_version_check`).
 
-## Worktree provider stays treehouse
+## Worktree provider: direct Git
 
 Herdr is a session provider only.
-Treehouse remains the worktree provider, exactly as it is for tmux.
-Herdr's own `worktree.*` operations (branch-based, pooling/lease-free) are never used by this adapter.
+Firstmate creates and removes a registered detached Git worktree through
+`bin/fm-git-worktree.sh`, exactly as it does for tmux.
+Herdr's own `worktree.*` operations (branch-based, pooling/lease-free) are not
+used by this adapter.
 
 ## Task container shape: tab-per-task in one workspace PER FIRSTMATE HOME
 
