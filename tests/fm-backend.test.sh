@@ -751,6 +751,9 @@ case "\${1:-}" in
     for a in "\$@"; do case "\$a" in *pane_current_path*) printf '%s\\n' "$wt"; exit 0 ;; esac; done
     printf 'firstmate\\n'; exit 0 ;;
   list-windows) exit 0 ;;
+  new-window)
+    [ "\${FM_FAKE_TMUX_FAIL_CREATE:-0}" = 1 ] && exit 1
+    printf '%%s\\n' '@fake-window-id@'; exit 0 ;;
 esac
 exit 0
 SH
@@ -967,6 +970,29 @@ test_spawn_refuses_unknown_fm_backend_env() {
   pass "fm-spawn.sh honors FM_BACKEND and refuses an unimplemented value loudly"
 }
 
+test_spawn_backend_failure_removes_unregistered_worktree() {
+  local proj data state config id fb log out rc wt
+  proj="$TMP_ROOT/backend-failure-project"; data="$TMP_ROOT/backend-failure-data"
+  state="$TMP_ROOT/backend-failure-state"; config="$TMP_ROOT/backend-failure-config"
+  id=backendfailurez6
+  mkdir -p "$proj" "$data/$id" "$state" "$config"
+  git -C "$proj" init -q
+  git -C "$proj" config user.email test@example.invalid
+  git -C "$proj" config user.name test
+  printf 'brief\n' > "$data/$id/brief.md"
+  git -C "$proj" add . && git -C "$proj" commit -qm initial
+  fb=$(make_spawn_fakebin "$TMP_ROOT/backend-failure-fake" "$proj")
+  log="$TMP_ROOT/backend-failure.log"
+  out=$(FM_FAKE_TMUX_FAIL_CREATE=1 run_spawn_case "$ROOT" "$fb" "$log" "$state" "$data" "$config" "$proj" -- \
+    "$id" "$proj" claude --backend tmux 2>&1)
+  rc=$?
+  [ "$rc" -ne 0 ] || fail "backend creation failure should fail the spawn"
+  wt="$TMP_ROOT/worktrees/$id"
+  [ ! -e "$wt" ] || fail "backend creation failure leaked the pre-runtime Git worktree: $wt\n$out"
+  [ ! -f "$state/$id.meta" ] || fail "backend creation failure created lifecycle metadata before runtime creation"
+  pass "fm-spawn removes a Git worktree when backend creation fails before lifecycle registration"
+}
+
 test_spawn_default_backend_writes_no_meta_field() {
   local proj wt data id state config out
   proj="$TMP_ROOT/nobackend-project"; wt="$TMP_ROOT/nobackend-wt"; data="$TMP_ROOT/nobackend-data"
@@ -1069,6 +1095,7 @@ test_teardown_uses_git_worktree_without_treehouse
 test_spawn_refuses_unknown_backend_flag
 test_spawn_refuses_codex_app_backend_flag
 test_spawn_refuses_unknown_fm_backend_env
+test_spawn_backend_failure_removes_unregistered_worktree
 test_spawn_default_backend_writes_no_meta_field
 test_spawn_explicit_backend_flag_beats_autodetect_herdr_env
 test_spawn_autodetect_nesting_resolves_tmux_silently

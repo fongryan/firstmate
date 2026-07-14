@@ -294,6 +294,10 @@ EOF
   # FM_BOOTSTRAP_DETECT_ONLY=1 actually suppressed the mutating sweep.
   mkdir -p "$home/other-secondmate/state"
   fm_write_secondmate_meta "$home/state/sm-x.meta" "$home/other-secondmate" "firstmate:fm-sm-x" alpha
+  # Legacy metadata is intentionally present so a read-only start would expose
+  # itself by creating the canonical lifecycle ledger during import.
+  printf 'project=%s\nworktree=%s\nwindow=firstmate:fm-legacy-readonly\n' \
+    "$root" "$root" > "$home/state/legacy-readonly.meta"
   append_wake "$home/state" signal sm-x "done: surfaced before refusal" || fail "seed wake failed"
   git -C "$root" checkout -q -B fm/read-only-tangle
 
@@ -335,6 +339,9 @@ EOF
   # The rest of the digest (read-only-safe) still completed.
   assert_contains "$out" "FLEET STATE" "fleet-state digest section missing on the read-only path"
   assert_contains "$out" "NEXT STEP" "closing reminder missing on the read-only path"
+  assert_contains "$out" "lifecycle-import: skipped (read-only session)" "read-only lifecycle import was not explicitly skipped"
+  [ ! -e "$home/state/legacy-readonly.lifecycle" ] \
+    || fail "read-only session imported legacy metadata and mutated lifecycle state"
 
   pass "a lock refusal prints a loud read-only banner, skips every mutating step, and still completes the digest"
 }

@@ -14,6 +14,14 @@ JSON=0
 usage() { echo "usage: fm-lifecycle-reap.sh [--dry-run|--apply] [--json]"; }
 die() { echo "fm-lifecycle-reap: $1" >&2; exit 1; }
 
+protected_live_endpoint() {
+  local candidate=$1
+  case $'\n'"${FM_LIFECYCLE_PROTECTED_IDS:-}"$'\n' in
+    *$'\n'"$candidate"$'\n'*) return 0 ;;
+    *) return 1 ;;
+  esac
+}
+
 while [ "$#" -gt 0 ]; do
   case "$1" in
     --dry-run) MODE=dry-run; shift ;;
@@ -47,6 +55,10 @@ records=("$STATE"/*.lifecycle)
 while IFS=$'\t' read -r id state age ttl grace heartbeat deadline; do
   [ -n "$id" ] || continue
   reason="heartbeat expired after ${ttl}s ttl + ${grace}s grace"
+  if protected_live_endpoint "$id"; then
+    emit "$id" "$state" "$age" protected "$reason; live endpoint observed during session start"
+    continue
+  fi
   if [ "$MODE" = dry-run ]; then
     emit "$id" "$state" "$age" would-interrupt "$reason"
     continue
