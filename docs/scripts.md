@@ -49,6 +49,11 @@ The shared no-mistakes gate refusal used by `fm-spawn.sh`, `fm-send.sh`, and `fm
 | `fm-supervisor-target-lib.sh` | Resolve the shared supervisor target and backend for the daemon and launcher       |
 | `fm-supervise-daemon.sh` | Presence-gated away-mode sub-supervisor: self-handle routine wakes, escalate batched digests, alert on failed delivery |
 | `fm-crew-state.sh`       | Print one deterministic current-state line for a crew                                |
+| `fm-lifecycle.sh`        | Register, transition, heartbeat, inspect, and evidence-gated closeout of a task    |
+| `fm-lifecycle-reap.sh`   | Dry-run or receipt-backed interruption of stale active lifecycle records             |
+| `fm-lifecycle-import.sh` | Idempotently import legacy `.meta` tasks into lifecycle state                       |
+| `fm-lifecycle-admit.sh`  | Enforce duplicate-objective and per-repo WIP admission gates                        |
+| `fm-lifecycle-reconcile.sh` | Classify owned worktrees without destructive mutation                              |
 | `fm-tangle-lib.sh`       | Shared default-branch resolution and primary-checkout tangle classification          |
 | `fm-supervision-lib.sh`  | Shared in-flight-work-without-fresh-watcher-beacon predicate                         |
 | `fm-ff-lib.sh`           | Shared guarded fast-forward helper for origin pulls and local secondmate syncs       |

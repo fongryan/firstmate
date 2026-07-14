@@ -700,9 +700,17 @@ else
 fi
 [ -f "$BRIEF" ] || { echo "error: no brief at $BRIEF" >&2; exit 1; }
 
-if [ "$KIND" != secondmate ] && [ "$BACKEND" != orca ]; then
+ # Admission is deliberately before any backend, terminal, or worktree
+ # mutation. Rejecting a duplicate or WIP-overflow task must not itself create
+ # the orphan it is meant to prevent.
+ OBJECTIVE=$(grep -m1 -v '^[[:space:]]*#\|^[[:space:]]*$' "$BRIEF" 2>/dev/null | sed 's/^[[:space:]]*//' || true)
+ [ -n "$OBJECTIVE" ] || OBJECTIVE="Firstmate task $ID"
+ ADMISSION_REPO=$(basename "$PROJ_ABS")
+ "$SCRIPT_DIR/fm-lifecycle-admit.sh" --repo "$ADMISSION_REPO" --objective "$OBJECTIVE" >/dev/null
+
+ if [ "$KIND" != secondmate ] && [ "$BACKEND" != orca ]; then
   WT=$(fm_git_worktree_create "$PROJ_ABS" "$ID") || exit 1
-fi
+ fi
 
 # PROJ_ABS can still carry a symlinked path component (e.g. macOS's /tmp ->
 # /private/tmp) when it came from the ship/scout branch's logical `pwd` above.
@@ -1063,6 +1071,15 @@ META_WINDOW=$T
   fi
 } > "$STATE/$ID.meta"
 [ "$BACKEND" = orca ] && ORCA_ABORT_CLEANUP=0
+
+# Register the task only after the worktree and runtime metadata are fully
+# resolved, but before launching the harness. A launch failure therefore leaves
+# a receipt-backed active record for the autonomous reaper instead of an
+# invisible orphan. Restore mode is restricted to this trusted spawn adapter.
+FM_STATE_OVERRIDE="$STATE" FM_LIFECYCLE_RESTORE=1 \
+  "$SCRIPT_DIR/fm-lifecycle.sh" register "$ID" --state active \
+  --repo "$ADMISSION_REPO" --owner "$ID" --branch "$(git -C "$WT" branch --show-current 2>/dev/null || printf 'detached')" \
+  --worktree "$WT" --objective "$OBJECTIVE" >/dev/null
 
 sq_brief=$(shell_quote "$BRIEF")
 sq_turnend=$(shell_quote "$TURNEND")
