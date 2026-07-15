@@ -17,11 +17,24 @@ mkdir -p "$STATE"
 # Known harness command names; extend when a new adapter is verified.
 HARNESS_RE='claude|codex|opencode|grok|^pi$'
 
+is_shared_codex_app_server() {
+  local comm=$1 args=$2
+  case "$(basename "$comm") $args" in
+    *codex*app-server*|*app-server*codex*) return 0 ;;
+  esac
+  return 1
+}
+
 harness_pid() {
   local pid=$$ comm args
   for _ in 1 2 3 4 5 6 7 8; do
     comm=$(ps -o comm= -p "$pid" 2>/dev/null) || return 1
     args=$(ps -o args= -p "$pid" 2>/dev/null)
+    is_shared_codex_app_server "$comm" "$args" && {
+      pid=$(ps -o ppid= -p "$pid" 2>/dev/null | tr -d ' ')
+      [ -n "$pid" ] && [ "$pid" -gt 1 ] || return 1
+      continue
+    }
     if printf '%s' "$(basename "$comm")" | grep -qE "$HARNESS_RE"; then
       echo "$pid"; return 0
     fi
@@ -36,10 +49,12 @@ harness_pid() {
 }
 
 holder_alive() {  # true if $1 is a live process that looks like a harness
-  local pid=$1 comm
+  local pid=$1 comm args
   kill -0 "$pid" 2>/dev/null || return 1
   comm=$(ps -o comm= -p "$pid" 2>/dev/null) || return 1
-  printf '%s' "$(basename "$comm") $(ps -o args= -p "$pid" 2>/dev/null)" | grep -qE "$HARNESS_RE"
+  args=$(ps -o args= -p "$pid" 2>/dev/null)
+  is_shared_codex_app_server "$comm" "$args" && return 1
+  printf '%s' "$(basename "$comm") $args" | grep -qE "$HARNESS_RE"
 }
 
 if [ "${1:-}" = "status" ]; then
