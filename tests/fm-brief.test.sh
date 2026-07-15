@@ -18,7 +18,7 @@ TMP_ROOT=$(fm_test_tmproot fm-brief)
 
 # The script itself must always parse. This is the direct regression test for
 # issue #166: a stray apostrophe in any of the three DOD heredoc bodies
-# (no-mistakes/direct-PR/local-only) breaks `bash -n` on the whole file.
+# (legacy no-mistakes/direct-PR/local-only) breaks `bash -n` on the whole file.
 test_script_parses() {
   bash -n "$ROOT/bin/fm-brief.sh" 2>&1 || fail "bin/fm-brief.sh fails bash -n (heredoc/quote regression)"
   pass "fm-brief.sh: bash -n succeeds"
@@ -32,12 +32,13 @@ test_help_includes_entire_header() {
 }
 
 # Registry with one project per delivery mode, so each ship-mode DOD branch is
-# exercised. A project absent from the registry defaults to no-mistakes.
+# exercised. A project absent from the registry defaults to direct-PR.
 write_registry() {
   local home=$1
   mkdir -p "$home/data"
   cat > "$home/data/projects.md" <<'EOF'
 - direct-proj [direct-PR] - fixture for direct-PR mode (added 2026-07-01)
+- legacy-nomistakes [no-mistakes] - fixture for optional legacy mode (added 2026-07-01)
 - local-proj [local-only] - fixture for local-only mode (added 2026-07-01)
 EOF
 }
@@ -52,7 +53,7 @@ test_ship_modes_generate_clean_briefs() {
   home="$TMP_ROOT/ship-home"
   write_registry "$home"
 
-  for id_proj in "brief-nomistakes-a1:no-registry-proj" "brief-directpr-a2:direct-proj" "brief-localonly-a3:local-proj"; do
+  for id_proj in "brief-default-a1:no-registry-proj" "brief-legacy-a2:legacy-nomistakes" "brief-directpr-a3:direct-proj" "brief-localonly-a4:local-proj"; do
     id=${id_proj%%:*}
     proj=${id_proj##*:}
     FM_HOME="$home" "$ROOT/bin/fm-brief.sh" "$id" "$proj" >/dev/null 2>&1; status=$?
@@ -63,7 +64,7 @@ test_ship_modes_generate_clean_briefs() {
     assert_grep "{TASK}" "$brief" "$id: brief missing the {TASK} placeholder"
     assert_no_grep "EOF" "$brief" "$id: brief leaked a heredoc EOF marker (unterminated heredoc)"
   done
-  pass "fm-brief.sh: no-mistakes/direct-PR/local-only briefs generate cleanly"
+  pass "fm-brief.sh: direct-PR default, optional legacy, and local-only briefs generate cleanly"
 }
 
 # Pin the specific line the bug lived on: the no-mistakes DOD's no-mistakes
@@ -72,8 +73,9 @@ test_no_mistakes_dod_wording() {
   local home id brief
   home="$TMP_ROOT/wording-home"
   mkdir -p "$home/data"
+  printf '%s\n' '- legacy [no-mistakes] - explicit legacy fixture' > "$home/data/projects.md"
   id="brief-wording-b1"
-  FM_HOME="$home" "$ROOT/bin/fm-brief.sh" "$id" some-proj >/dev/null 2>&1
+  FM_HOME="$home" "$ROOT/bin/fm-brief.sh" "$id" legacy >/dev/null 2>&1
   brief="$home/data/$id/brief.md"
   assert_present "$brief" "brief was not scaffolded"
   assert_grep "no-mistakes itself provides for the mechanics" "$brief" \
