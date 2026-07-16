@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
-# Project-crewmate spawning is retired. Work directly in the repository default
-# branch; this file remains only as a loud compatibility stop.
+# Spawn a direct report: a crewmate in a treehouse or Orca worktree, or a
+# secondmate in its isolated firstmate home.
 # Usage: fm-spawn.sh <task-id> <project-dir> [--harness <name>|harness|launch-command] [--model <name>] [--effort <level>] [--backend <name>] [--scout]
 #        fm-spawn.sh <task-id> [<firstmate-home>] [--harness <name>|harness|launch-command] [--model <name>] [--effort <level>] [--backend <name>] --secondmate
 #   --harness <name> is the explicit per-spawn harness/profile adapter. The old
@@ -80,9 +80,6 @@
 # mode/yolo are resolved per-project from data/projects.md for ship/scout tasks;
 # secondmate spawns record mode=secondmate, yolo=off, home=, and projects=.
 set -eu
-
-echo "error: project-agent spawning is retired in mainline mode; work directly on the repository default branch. Treehouse and no-mistakes are disabled." >&2
-exit 2
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
