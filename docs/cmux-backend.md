@@ -18,7 +18,7 @@ Prerequisites:
 
 - The cmux app itself, installed from [cmux.com](https://cmux.com) or `brew install --cask cmux`, version 0.64.17 or newer.
 - `jq`, required to parse cmux's JSON output: `brew install jq` (or your platform's package manager).
-- The universal firstmate prerequisites - a verified crew harness plus the required toolchain, owned by [`docs/configuration.md`](configuration.md) ("Harness support", "Toolchain"); treehouse still provides the worktree, cmux only provides the session.
+- The universal firstmate prerequisites - a verified crew harness plus the required toolchain, owned by [`docs/configuration.md`](configuration.md) ("Harness support", "Toolchain"); Firstmate creates the task's Git worktree directly, while cmux provides the session.
 - The cmux CLI binary is not guaranteed to be on `PATH` after a plain app install (see "CLI is not on PATH by default" below) - the adapter falls back to the well-known bundle path automatically, so this is not a blocker, just something to be aware of if you want to run `cmux` yourself from a shell.
 
 **One-time socket access setup (required, not optional):** cmux's control socket defaults to `automation.socketControlMode: "cmuxOnly"`, which rejects any CLI process not spawned inside cmux itself - firstmate always drives cmux from an external shell, so this must be changed before `backend=cmux` can work at all.
@@ -131,7 +131,7 @@ Which signal is authoritative when:
 
 The positive ancestry walk itself is exercised by fake `ps`/`lsappinfo` unit tests rather than live (running a probe process genuinely parented under the captain's live cmux tabs was judged too intrusive, the same posture as this document's screenshot note); every negative live fact above - the strip, the wrapper ping failure, the tmux reparenting, the bundle-id inheritance, the lsappinfo resolution shapes - was verified against the real machine on 2026-07-04.
 
-## Worktree provider stays treehouse
+## Worktree provider: direct Git
 
 cmux is a session provider only, exactly like herdr and zellij (unlike Orca, which also owns the task worktree).
 Treehouse remains the worktree provider.
@@ -370,6 +370,5 @@ All three tasks' cmux workspaces and worktrees were confirmed fully cleaned up a
   The one-time socket-access setup remains an unavoidable manual step regardless of how the backend was selected.
 - **`--secondmate` spawns are refused** (mirrors Orca's refusal) - no per-home container design (a herdr-style workspace-per-home split, or similar) has been designed or verified for cmux yet.
 - **The one-time socket-access setup is a real, undocumented-by-upstream onboarding step.** A captain who selects `backend=cmux` without first switching `automation.socketControlMode` away from its `cmuxOnly` default to a viable mode (Automation mode recommended; see "Setup") will see every spawn fail with an actionable error naming the viable modes and pointing back to this document, but there is no way for firstmate to complete that GUI-only setup step on the captain's behalf.
-- **Backend-specific bootstrap detection is absent** - `bin/fm-bootstrap.sh` does not conditionally add `cmux` and `jq` when a backend selection resolves to cmux, mirroring the same accepted gap already documented for herdr/zellij; the version/tool/reachability gate happens at spawn time instead and refuses loudly.
 - **A surface can still die in the brief window between `target_ready` succeeding and the operation's own call running.** That remaining race degrades to "the operation quietly did nothing" - the same class of gap firstmate already tolerates for an unverified send on any backend, caught downstream by `fm-spawn.sh`'s worktree-discovery poll timing out, `fm_backend_cmux_send_text_submit`'s retry loop (which reports `send-failed`/`pending`/`unknown` rather than a false "sent"), or the watcher's stale-pane detection.
 - **Windows cannot be closed over the control socket, and label lookup is current-window scoped** - both owned by "Closing the last workspace in a window" above. Teardown of a last-in-window task workspace therefore leaves that window a fresh default workspace rather than closing it, and `fm_backend_cmux_workspace_id_for_label`/`fm_backend_cmux_list_live` only see the current window, so a task workspace parked in a non-current window is a known blind spot for label-based recovery.

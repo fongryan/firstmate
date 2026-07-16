@@ -205,11 +205,13 @@ make_liveness_tmux() {
   cat > "$fakebin/tmux" <<'SH'
 #!/usr/bin/env bash
 set -u
-case "${1:-}" in
+  case "${1:-}" in
   display-message)
+    [ -z "${FM_TEST_LIVENESS_SLEEP:-}" ] || sleep "$FM_TEST_LIVENESS_SLEEP"
     for a in "$@"; do case "$a" in *pane_current_command*) printf '%s\n' "${FM_TEST_PANE_CMD:-zsh}"; exit 0 ;; esac; done
     exit 0 ;;
   new-window|kill-window)
+    [ -z "${FM_TEST_SPAWN_SLEEP:-}" ] || sleep "$FM_TEST_SPAWN_SLEEP"
     printf '%s\n' "$*" >> "${FM_TMUX_CALL_LOG:?}"
     exit 0 ;;
   list-windows|has-session) exit 0 ;;
@@ -386,6 +388,75 @@ test_sweep_noop_with_no_secondmate_meta() {
   pass "sweep: a silent no-op with no kind=secondmate meta present (a secondmate home's own natural scoping)"
 }
 
+test_sweep_respects_respawn_budget_and_reports_partial_recovery() {
+  local w fb tmuxfb log out i
+  w=$(new_world sweep-budget)
+  i=1
+  while [ "$i" -le 4 ]; do
+    add_sm_home "$w" "sm$i" "firstmate:fm-sm$i"
+    i=$((i + 1))
+  done
+  fb=$(make_toolchain "$w"); tmuxfb=$(make_liveness_tmux "$w")
+  log="$w/calls.log"; : > "$log"
+
+  out=$(run_bootstrap "$tmuxfb:$fb" "$w/home" zsh "$log" FM_SECOND_MATE_RESPAWN_BUDGET=2)
+
+  [ "$(grep -c '^kill-window ' "$log" || true)" -eq 2 ] \
+    || fail "a bootstrap recovery budget of 2 must kill at most two stale endpoints: $(cat "$log")"
+  assert_contains "$out" "SECONDMATE_LIVENESS: recovery budget exhausted" \
+    "bounded recovery must report that the remaining stale endpoints were skipped"
+  assert_contains "$out" "attempted=2" \
+    "bounded recovery must report the number of attempted respawns"
+  pass "sweep: bounded recovery stops after its configured respawn budget and reports partial state"
+}
+
+test_sweep_bounds_probe_and_spawn_timeouts() {
+  local w fb tmuxfb log out
+  w=$(new_world sweep-timeouts)
+  add_sm_home "$w" sm1 firstmate:fm-sm1
+  fb=$(make_toolchain "$w"); tmuxfb=$(make_liveness_tmux "$w")
+  log="$w/calls.log"; : > "$log"
+
+  out=$(run_bootstrap "$tmuxfb:$fb" "$w/home" zsh "$log" \
+    FM_SECOND_MATE_LIVENESS_TIMEOUT=1 FM_TEST_LIVENESS_SLEEP=3)
+  assert_contains "$out" "SECONDMATE_LIVENESS: secondmate sm1: skipped: liveness probe timed out" \
+    "a stalled liveness probe must fail soft within its timeout"
+
+  out=$(run_bootstrap "$tmuxfb:$fb" "$w/home" zsh "$log" \
+    FM_SECOND_MATE_LIVENESS_TIMEOUT=1 FM_SECOND_MATE_RESPAWN_TIMEOUT=1 FM_TEST_SPAWN_SLEEP=3)
+  assert_contains "$out" "SECONDMATE_LIVENESS: secondmate sm1: respawn timed out" \
+    "a stalled respawn must fail soft within its timeout"
+  pass "sweep: liveness probes and respawns are individually time-bounded"
+}
+
+test_bounded_runner_preserves_signal_failure() {
+  local bounded rc
+  bounded=$(sed -n '/^fm_run_bounded() {/,/^}/p' "$ROOT/bin/fm-bootstrap.sh")
+  eval "$bounded"
+  set +e
+  fm_run_bounded 2 bash -c 'kill -TERM $$' >/dev/null 2>&1
+  rc=$?
+  set -u
+  [ "$rc" -ge 128 ] || fail "a bounded child terminated by signal must remain a failure (rc=$rc)"
+  pass "fm_run_bounded preserves signaled child failures"
+}
+
+test_sweep_rotates_after_cursor() {
+  local w fb tmuxfb log out
+  w=$(new_world sweep-rotation)
+  add_sm_home "$w" sm1 firstmate:fm-sm1
+  add_sm_home "$w" sm2 firstmate:fm-sm2
+  fb=$(make_toolchain "$w"); tmuxfb=$(make_liveness_tmux "$w")
+  log="$w/calls.log"; : > "$log"
+
+  out=$(run_bootstrap "$tmuxfb:$fb" "$w/home" zsh "$log" FM_SECOND_MATE_RESPAWN_BUDGET=1)
+  assert_contains "$out" "secondmate sm1: respawned" "the initial cursor should start with the first sorted endpoint"
+  : > "$log"
+  out=$(run_bootstrap "$tmuxfb:$fb" "$w/home" zsh "$log" FM_SECOND_MATE_RESPAWN_BUDGET=1)
+  assert_contains "$out" "secondmate sm2: respawned" "the next run should rotate to the next endpoint"
+  pass "sweep: persistent cursor prevents one broken endpoint from starving later recovery"
+}
+
 test_tmux_agent_alive_classifies
 test_herdr_agent_alive_maps_pane_agent_state
 test_agent_alive_dispatcher_routes_and_falls_back
@@ -396,5 +467,9 @@ test_sweep_never_acts_on_unverified_harness_dead_reading
 test_sweep_converges_no_retouch_once_alive
 test_sweep_skipped_under_detect_only
 test_sweep_noop_with_no_secondmate_meta
+test_sweep_respects_respawn_budget_and_reports_partial_recovery
+test_sweep_bounds_probe_and_spawn_timeouts
+test_bounded_runner_preserves_signal_failure
+test_sweep_rotates_after_cursor
 
 echo "# all fm-secondmate-liveness tests passed"

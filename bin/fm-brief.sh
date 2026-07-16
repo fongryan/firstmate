@@ -29,8 +29,8 @@
 # For ship tasks, the definition of done is shaped by the project's delivery mode
 # (data/projects.md via fm-project-mode.sh; see AGENTS.md project management
 # and task lifecycle):
-#   no-mistakes  implement -> /no-mistakes pipeline -> PR -> captain merge (default)
-#   direct-PR    implement -> push + open PR via gh-axi (no pipeline) -> captain merge
+#   direct-PR    implement -> push + open PR via gh-axi (no pipeline) -> captain merge (default)
+#   no-mistakes  optional legacy implement -> no-mistakes pipeline -> PR -> captain merge
 #   local-only   implement on branch, stop and report "ready in branch" (no push/PR);
 #                firstmate reviews, captain approves, firstmate merges to local main
 # Ship briefs begin with a worktree-isolation assertion before the branch step.
@@ -307,7 +307,7 @@ Firstmate then reviews your branch diff, the captain approves, and firstmate mer
 EOF
 )
     ;;
-  *)  # no-mistakes (default)
+  no-mistakes)
     SETUP2="
 2. Run \`no-mistakes doctor\`; if it reports the repo is not initialized here, run \`no-mistakes init\`."
     RULE1='1. Never push to the default branch. Never merge a PR.'
@@ -330,6 +330,9 @@ After /no-mistakes reports CI green (the CI-ready return point - do not wait for
 EOF
 )
     ;;
+  *)
+    echo "error: unsupported delivery mode $MODE" >&2
+    exit 1
 esac
 
 cat > "$BRIEF" <<EOF
@@ -343,7 +346,7 @@ $HERDR_SECTION
 # Setup
 You are in a disposable git worktree of $REPO, at a detached HEAD on a clean default branch.
 
-**Verify isolation before anything else.** Run \`pwd -P\` and \`git rev-parse --show-toplevel\`; both must resolve to the disposable task worktree you were launched in, such as a treehouse pool path or an Orca-managed worktree, not the primary checkout firstmate operates from.
+**Verify isolation before anything else.** Run \`pwd -P\` and \`git rev-parse --show-toplevel\`; both must resolve to the disposable Git worktree you were launched in, not the primary checkout firstmate operates from.
 The path check is authoritative: \`git rev-parse --git-dir\` and \`git rev-parse --git-common-dir\` can help inspect the repo, but they do not prove you are outside the primary checkout.
 If the top-level path is the primary checkout or not the worktree you were launched in, STOP - do not branch or commit here - append \`blocked: launched in primary checkout, not an isolated worktree\` to the status file and stop.
 

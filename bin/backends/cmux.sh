@@ -5,7 +5,7 @@
 # section 4) plus the live-app verification pass recorded in
 # docs/cmux-backend.md (real cmux 0.64.17, macOS aarch64, 2026-07-03). cmux is
 # a session provider ONLY, exactly like herdr/zellij: the worktree provider
-# stays treehouse. Sourced only through bin/fm-backend.sh's fm_backend_source
+# is created by Git. Sourced only through bin/fm-backend.sh's fm_backend_source
 # in normal operation; the unit tests source it directly.
 #
 # Container shape: cmux has no "session" layer to multiplex the way
@@ -23,7 +23,7 @@
 # runtime auto-detection when firstmate itself is already running inside a
 # cmux-spawned terminal (primary CMUX_WORKSPACE_ID marker, with documented
 # macOS fallback signals for wrapper-stripped claude). Unlike Orca, cmux is a
-# pure session provider (treehouse still owns the worktree) and Escape IS
+# pure session provider (Git owns the linked worktree) and Escape IS
 # natively supported.
 #
 # Empirical findings from the live verification pass (docs/cmux-backend.md has
@@ -36,7 +36,7 @@
 #      (herdr-shape): `workspace list`'s `current_directory` field reflects a
 #      `cd` run directly in the surface's own top-level shell, but stays
 #      frozen at wherever that shell was when it launched a foreground
-#      subshell (exactly what `treehouse get` does) - verified live: a nested
+#      subshell (exactly what a linked-worktree launch does) - verified live: a nested
 #      `bash -c 'cd /Users && exec bash'` left `current_directory` reporting
 #      the PARENT shell's last cwd, never following into the subshell. Fixed
 #      with zellij's own pwd-marker-probe workaround, reused verbatim in
@@ -99,8 +99,9 @@
 #   command 'auth'" reply (cli/cmux.swift, authenticateSocketClientIfNeeded).
 #
 # Requires: cmux (CLI, bundled inside cmux.app - not guaranteed to be on PATH;
-# see fm_backend_cmux_bin), jq (JSON parsing). Both are gated behind selecting
-# this backend; bin/fm-bootstrap.sh's core tool list is unaffected.
+# see fm_backend_cmux_bin), jq (JSON parsing). Bootstrap detects these through
+# fm_backend_required_tools only when cmux is the resolved backend; this adapter
+# also gates them again before spawning.
 
 # FM_HOME fallback: every real caller already sets FM_HOME as a global before
 # sourcing fm-backend.sh (which sources this file); this exists only so this
@@ -436,7 +437,7 @@ fm_backend_cmux_target_ready() {  # <target> [expected-label]
 #
 # Verified pitfall (finding #2 above): cmux's `current_directory` field DOES
 # reflect a `cd` run directly in the surface's own top-level shell, but stays
-# FROZEN at whatever directory that shell was in when it launched `treehouse
+# FROZEN at whatever directory that shell was in when it launched the linked
 # get` as a foreground command - it never follows that command's own internal
 # `cd` into the acquired worktree. cmux's control socket exposes no
 # live-process cwd field either (unlike herdr's `foreground_cwd`), so passive
@@ -503,7 +504,7 @@ fm_backend_cmux_send_key() {  # <target> <key> [expected-label]
 # fm_backend_cmux_send_text_line: send one line of TEXT then submit. cmux has
 # no single-call atomic "run and submit" primitive (like herdr's `pane run`),
 # so this composes send (literal) + send-key enter, exactly like zellij's
-# equivalent - used for the fixed spawn-time commands (treehouse get, the
+# equivalent - used for the fixed spawn-time commands (the
 # GOTMPDIR export).
 fm_backend_cmux_send_text_line() {  # <target> <text> [expected-label]
   fm_backend_cmux_send_literal "$1" "$2" "${3:-}" || return 1

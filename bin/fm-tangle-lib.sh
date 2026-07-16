@@ -2,7 +2,7 @@
 # Shared worktree-tangle guard for the firstmate-on-itself case.
 # Usage: . bin/fm-tangle-lib.sh
 #
-# Firstmate is a treehouse-pooled git repo of itself: crewmate worktrees and
+# Firstmate uses ordinary Git linked worktrees: crewmate worktrees and
 # secondmate homes are all linked `git worktree`s of the same repo, while the
 # PRIMARY checkout (the repo root firstmate operates from) is a normal checkout
 # on a real branch - normally the default branch, main. The "worktree tangle"

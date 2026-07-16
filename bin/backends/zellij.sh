@@ -3,9 +3,9 @@
 #
 # Design: data/fm-backend-design-d7/report.md ("Zellij Backend" section - the
 # interface mapping, implementation choices, and "Zellij gaps to verify" list)
-# and herdr-addendum.md D2/D3 (zellij is P3, after herdr; treehouse stays the
+# and herdr-addendum.md D2/D3 (zellij is P3, after herdr; Git creates the
 # worktree provider). Zellij is a session provider ONLY: the worktree provider
-# stays treehouse, exactly like tmux and herdr. Sourced only through
+# linked worktree, exactly like tmux and herdr. Sourced only through
 # bin/fm-backend.sh's fm_backend_source in normal operation; the unit tests
 # source it directly.
 #
@@ -53,7 +53,7 @@
 #   4. `list-panes --json`'s `pane_cwd` reflects a `cd` run DIRECTLY in the
 #      pane's own top-level shell within one poll (<0.3s) - but does NOT
 #      reflect a `cd` performed by a NESTED SUBSHELL the pane's shell
-#      launched as a foreground command (verified: `treehouse get` opens
+#      launched as a foreground command (verified against nested worktree
 #      exactly such a subshell). `pane_cwd` stays frozen at wherever the
 #      pane's shell was when it invoked that foreground command - worse than
 #      herdr's frozen-cwd trap (herdr at least exposes a `foreground_cwd`
@@ -101,8 +101,9 @@
 #     `close-tab-by-id`, which verified cleanly removes a live tab (pane and
 #     all) in one call - never a separate close-pane first.
 #
-# Requires: zellij (CLI), jq (JSON parsing). Both are gated behind selecting
-# this backend; bin/fm-bootstrap.sh's core tool list is unaffected.
+# Requires: zellij (CLI), jq (JSON parsing). Bootstrap detects these through
+# fm_backend_required_tools only when zellij is the resolved backend; this
+# adapter also gates them again before spawning.
 
 # FM_HOME fallback: every real caller already sets FM_HOME as a global before
 # sourcing fm-backend.sh (which sources this file); this exists only so this
@@ -382,12 +383,12 @@ fm_backend_zellij_target_ready() {  # <target> [expected-label]
 
 # fm_backend_zellij_current_path: the live pane's cwd, or empty on any error.
 # Mirrors tmux's pane_current_path poll used for worktree-path discovery after
-# `treehouse get`.
+# the linked worktree shell.
 #
 # Verified pitfall (docs/zellij-backend.md "Worktree-path discovery: pane_cwd
 # does not track a subshell"): `list-panes --json`'s `pane_cwd` DOES reflect a
 # `cd` run directly in the pane's own top-level shell, but stays FROZEN at
-# whatever directory the pane's shell was in when it launched `treehouse get`
+# whatever directory the pane's shell was in when it launched the worktree shell
 # as a foreground command - it never follows that command's own internal `cd`
 # into the acquired worktree, even after the subshell is fully interactive and
 # a `pwd` typed into it prints the correct live path on screen. Zellij's CLI
@@ -461,7 +462,7 @@ fm_backend_zellij_send_key() {  # <target> <key> [expected-label]
 
 # fm_backend_zellij_send_text_line: send one line of TEXT then submit,
 # ATOMICALLY - mirrors tmux's `send-keys -t T text Enter` / herdr's `pane
-# run`. Used for the fixed spawn-time commands (treehouse get, the GOTMPDIR
+# run`. Used for the fixed spawn-time commands (the GOTMPDIR
 # export). Zellij has no single-call atomic "run and submit" action, so this
 # composes paste (literal) + send-keys Enter, exactly like send_literal +
 # send_key are composed elsewhere - the two-step form is the ONLY form for

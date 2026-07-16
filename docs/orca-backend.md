@@ -6,7 +6,7 @@ Firstmate agents operating this backend should load the agent-only [`firstmate-o
 
 ## Setup
 
-Pick Orca if you already run the Orca macOS app as your terminal environment and want firstmate tasks to live in Orca-managed worktrees and terminals instead of a treehouse/tmux pair.
+Pick Orca if you already run the Orca macOS app as your terminal environment and want firstmate tasks to live in Orca-managed worktrees and terminals instead of a Git-worktree/tmux pair.
 Orca is macOS-only, explicit-only (never auto-detected), and has no secondmate support.
 
 Prerequisites:
@@ -14,6 +14,7 @@ Prerequisites:
 - The Orca app installed at `/Applications/Orca.app`, and **running**.
 - The `orca` CLI: `brew install orca`.
 - `node`, used by firstmate's adapter to parse Orca's JSON output and to gate spawns on runtime readiness.
+- The universal firstmate prerequisites - a verified crew harness plus the required toolchain, owned by [`docs/configuration.md`](configuration.md) ("Harness support", "Toolchain") - with `orca` as the only backend-specific tool, since Orca provides both the task worktree and terminal while the other backends use Firstmate's direct Git worktree provider.
 - The universal firstmate prerequisites minus `tmux` and `treehouse` (Orca replaces both) - a verified crew harness plus the required toolchain, owned by [`docs/configuration.md`](configuration.md) ("Harness support", "Toolchain").
 
 Select Orca by putting `orca` in a local `config/backend` file - the durable way to pick it - or by exporting `FM_BACKEND=orca` when you launch your harness for a one-off session; telling the first mate in chat to use Orca also works.
@@ -43,7 +44,7 @@ Before spawn mutates any repo/worktree state, firstmate runs `orca status --json
 ## Task Shape
 
 An Orca task is one Orca-managed git worktree plus one Orca terminal.
-Unlike `tmux`, `herdr`, `zellij`, and `cmux`, Orca is not only a session provider; it also provides the task worktree, so `fm-spawn.sh` does not run `treehouse get` for Orca tasks.
+Unlike `tmux`, `herdr`, `zellij`, and `cmux`, Orca is not only a session provider; it also provides the task worktree, so `fm-spawn.sh` does not create a Git worktree for Orca tasks.
 
 The normal firstmate invariant still applies: a ship or scout task must run outside the project primary checkout, and teardown must refuse to discard unlanded ship work.
 

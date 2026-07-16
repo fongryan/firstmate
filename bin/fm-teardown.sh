@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Tear down a finished task: return the treehouse worktree, release the Orca
+# Tear down a finished task: remove the Git worktree, release the Orca
 # worktree, or retire a secondmate home; kill the recorded runtime endpoint,
 # clear volatile state, refresh/prune the project's clone for PR-based ship
 # tasks, then print a backlog-refresh reminder for ship and scout teardowns
@@ -35,6 +35,9 @@
 # teardown refuses while their home has in-flight crewmate meta files; --force
 # is the approved discard path that prevalidates child removal targets, discards
 # child work, kills child runtime endpoints, and removes the retired home. Removing a
+# Git-created homes are removed through Git's registered worktree API. Unknown
+# legacy paths are preserved instead of guessed or silently deleted.
+# Usage: fm-teardown.sh <task-id> [--force]
 # leased home releases its durable treehouse lease so the pool slot is freed,
 # never left leased forever. If the treehouse return fails, teardown leaves the
 # leased home and state in place instead of hiding a still-held lease.
@@ -92,6 +95,15 @@ SUB_HOME_MARKER=".fm-secondmate-home"
 . "$SCRIPT_DIR/fm-tasks-axi-lib.sh"
 # shellcheck source=bin/fm-backend.sh
 . "$SCRIPT_DIR/fm-backend.sh"
+# shellcheck source=bin/fm-git-worktree.sh
+. "$SCRIPT_DIR/fm-git-worktree.sh"
+# shellcheck source=bin/fm-lock-lib.sh
+. "$SCRIPT_DIR/fm-lock-lib.sh"
+# shellcheck source=bin/fm-gate-refuse-lib.sh
+. "$SCRIPT_DIR/fm-gate-refuse-lib.sh"
+# Fail closed before any fleet mutation: a no-mistakes gate agent must never tear
+# down a worktree (see bin/fm-gate-refuse-lib.sh).
+fm_refuse_if_gate_agent
 # shellcheck source=bin/fm-lock-lib.sh
 . "$SCRIPT_DIR/fm-lock-lib.sh"
 FM_LOCK_LOG_PREFIX=teardown
@@ -131,7 +143,7 @@ ORCA_PATH_MATCH_VERIFIED=0
 KIND=$(grep '^kind=' "$META" | cut -d= -f2- || true)
 [ -n "$KIND" ] || KIND=ship
 MODE=$(grep '^mode=' "$META" | cut -d= -f2- || true)
-[ -n "$MODE" ] || MODE=no-mistakes
+[ -n "$MODE" ] || MODE=direct-PR
 
 default_branch() {
   local ref branch
@@ -570,23 +582,15 @@ STALE_WORKTREE_LOCK_AGE_SECS=${FM_STALE_WORKTREE_LOCK_AGE_SECS:-30}
 # Bounded patience window for transient index.lock after killing a crew process.
 # New knobs are preferred; FM_STALE_WORKTREE_LOCK_RETRY_WAIT_SECS remains an alias
 # for the per-attempt wait so existing tests and operators keep working.
-TREEHOUSE_RETURN_LOCK_RETRIES=${FM_TREEHOUSE_RETURN_LOCK_RETRIES:-3}
-TREEHOUSE_RETURN_LOCK_RETRY_WAIT_SECS=${FM_TREEHOUSE_RETURN_LOCK_RETRY_WAIT_SECS:-${FM_STALE_WORKTREE_LOCK_RETRY_WAIT_SECS:-1}}
-if ! retry_wait_secs_is_valid "$TREEHOUSE_RETURN_LOCK_RETRY_WAIT_SECS"; then
-  echo "teardown: invalid treehouse return lock retry wait '$TREEHOUSE_RETURN_LOCK_RETRY_WAIT_SECS'; using 1s" >&2
-  TREEHOUSE_RETURN_LOCK_RETRY_WAIT_SECS=1
+WORKTREE_LOCK_RETRY_WAIT_SECS=${FM_WORKTREE_LOCK_RETRY_WAIT_SECS:-${FM_STALE_WORKTREE_LOCK_RETRY_WAIT_SECS:-1}}
+if ! retry_wait_secs_is_valid "$WORKTREE_LOCK_RETRY_WAIT_SECS"; then
+  echo "teardown: invalid worktree lock retry wait '$WORKTREE_LOCK_RETRY_WAIT_SECS'; using 1s" >&2
+  WORKTREE_LOCK_RETRY_WAIT_SECS=1
 fi
-# Compatibility alias used by the safety-check wait path and older call sites.
-STALE_WORKTREE_LOCK_RETRY_WAIT_SECS=$TREEHOUSE_RETURN_LOCK_RETRY_WAIT_SECS
-TEARDOWN_TREEHOUSE_LOCK_REFUSED=2
+# Compatibility alias used by the safety-check wait path.
+STALE_WORKTREE_LOCK_RETRY_WAIT_SECS=$WORKTREE_LOCK_RETRY_WAIT_SECS
+TEARDOWN_WORKTREE_LOCK_REFUSED=2
 TEARDOWN_WORKTREE_SAFETY_LOCK_BLOCKED=3
-
-# True when treehouse/git stderr shows the transient index.lock "File exists" race.
-# Other return failures must not enter the retry path.
-treehouse_return_is_index_lock_error() {
-  local text=$1
-  printf '%s\n' "$text" | grep -Eq "Unable to create ['\"].*index\\.lock['\"]: File exists"
-}
 
 # Absolute path to the git index lock for a worktree/repo dir, or empty when it
 # cannot be resolved (dir missing or not a git worktree at all).
@@ -637,6 +641,7 @@ cleanup_stale_lock_for_safety_check() {
   fi
 
   echo "teardown: worktree safety check blocked by git lock $lock that is not provably stale (may belong to a live process); leaving it in place" >&2
+  return "$TEARDOWN_WORKTREE_LOCK_REFUSED"
   return "$TEARDOWN_TREEHOUSE_LOCK_REFUSED"
 }
 
@@ -811,7 +816,7 @@ require_orca_worktree_path_match_if_present() {
   require_orca_worktree_path_match "$worktree_id" "$inspected"
 }
 
-firstmate_home_has_treehouse_slot() {
+firstmate_home_has_git_worktree() {
   local home=$1
   worktree_registered_for_project "$FM_ROOT" "$home"
 }
@@ -977,13 +982,9 @@ remove_firstmate_home() {
   [ -e "$home" ] || return 0
   abs_home_path=$(validate_firstmate_home_for_removal "$home" "$label" "$expected_id") || return 1
   [ -n "$abs_home_path" ] || return 0
-  if firstmate_home_has_treehouse_slot "$abs_home_path"; then
-    command -v treehouse >/dev/null 2>&1 || {
-      echo "error: treehouse command not found; cannot return $label $abs_home_path" >&2
-      return 1
-    }
-    teardown_treehouse_return "$abs_home_path" "$FM_ROOT" "$label" || {
-      echo "error: treehouse return failed for $label $abs_home_path; lease may still be held" >&2
+  if firstmate_home_has_git_worktree "$abs_home_path"; then
+    fm_git_worktree_remove "$FM_ROOT" "$abs_home_path" 1 || {
+      echo "error: git worktree removal failed for $label $abs_home_path; preserving metadata" >&2
       return 1
     }
     return 0
@@ -1022,7 +1023,7 @@ validate_firstmate_home_children_removal() {
 }
 
 cleanup_firstmate_home_children() {
-  local home=$1 sub_state child_meta child_id child_t child_wt child_proj child_kind child_home child_backend child_orca_worktree_id child_return_rc
+  local home=$1 sub_state child_meta child_id child_t child_wt child_proj child_kind child_home child_backend child_orca_worktree_id
   sub_state="$home/state"
   [ -d "$sub_state" ] || return 0
   for child_meta in "$sub_state"/*.meta; do
@@ -1069,16 +1070,8 @@ cleanup_firstmate_home_children() {
     elif [ -n "$child_wt" ] && [ -d "$child_wt" ]; then
       validate_child_worktree_for_removal "$child_wt" "$child_proj" >/dev/null || return 1
       rm -f "$child_wt/.claude/settings.local.json" "$child_wt/.opencode/plugins/fm-turn-end.js" "$child_wt/.fm-grok-turnend"
-      if [ -n "$child_proj" ] && [ -d "$child_proj" ] && command -v treehouse >/dev/null 2>&1; then
-        if teardown_treehouse_return "$child_wt" "$child_proj" "child worktree"; then
-          :
-        else
-          child_return_rc=$?
-          if [ "$child_return_rc" -eq "$TEARDOWN_TREEHOUSE_LOCK_REFUSED" ]; then
-            return "$child_return_rc"
-          fi
-          safe_rm_rf_child_worktree "$child_wt" "$child_proj"
-        fi
+      if [ -n "$child_proj" ] && [ -d "$child_proj" ] && worktree_registered_for_project "$child_proj" "$child_wt"; then
+        fm_git_worktree_remove "$child_proj" "$child_wt" 1 || return 1
       else
         safe_rm_rf_child_worktree "$child_wt" "$child_proj"
       fi
@@ -1153,6 +1146,40 @@ if [ -d "$WT" ] && [ "$FORCE" != "--force" ]; then
   fi
 fi
 
+# Close the canonical lifecycle record before any backend, worktree, or home
+# removal. Existing terminal receipts are preserved; only non-terminal work is
+# advanced, so an already-interrupted task cannot be falsely marked completed.
+if [ -f "$STATE/$ID.lifecycle" ]; then
+  LIFECYCLE_STATE=$(grep '^state=' "$STATE/$ID.lifecycle" 2>/dev/null | tail -1 | cut -d= -f2- || true)
+  case "$LIFECYCLE_STATE" in
+    interrupted|completed|superseded|abandoned) : ;;
+    *)
+      LIFECYCLE_PROOF="$STATE/$ID.teardown-proof"
+      {
+        echo "task=$ID"
+        echo "teardown_at=$(date +%s)"
+        echo "kind=$KIND"
+        echo "force=$FORCE"
+        echo "worktree=$WT"
+        echo "safety=validated-before-teardown"
+      } > "$LIFECYCLE_PROOF"
+      if [ "$FORCE" = "--force" ]; then
+        LIFECYCLE_TARGET=abandoned
+        LIFECYCLE_REASON="explicit force teardown"
+      else
+        LIFECYCLE_TARGET=completed
+        LIFECYCLE_REASON="teardown safety and owner cleanup passed"
+      fi
+      FM_STATE_OVERRIDE="$STATE" FM_LIFECYCLE_ACTOR=teardown \
+        "$SCRIPT_DIR/fm-lifecycle.sh" closeout "$ID" "$LIFECYCLE_TARGET" \
+        --reason "$LIFECYCLE_REASON" --evidence "$LIFECYCLE_PROOF" >/dev/null || {
+          echo "error: lifecycle closeout failed for $ID; preserving runtime and lifecycle evidence" >&2
+          exit 1
+        }
+      ;;
+  esac
+fi
+
 # Best-effort: drop the local task branch so the shared repo does not accumulate refs.
 if [ "$BACKEND" = orca ] && [ "$KIND" != secondmate ]; then
   if [ "$ORCA_PATH_MATCH_VERIFIED" != 1 ]; then
@@ -1179,18 +1206,15 @@ elif [ -d "$WT" ] && [ "$KIND" != secondmate ]; then
   fi
   # Remove our hook file so a reused pool worktree cannot fire signals for a dead task.
   rm -f "$WT/.claude/settings.local.json" "$WT/.opencode/plugins/fm-turn-end.js" "$WT/.fm-grok-turnend"
-  # Kills remaining processes in the worktree (including the agent), resets, returns
-  # to pool. treehouse resolves the pool from the working directory, so run it from
-  # the project. teardown_treehouse_return tolerates transient and stale git locks
-  # left by a killed crew process; see the script header for retry and stale-lock proof.
-  post_lock_cleanup_check=
-  if [ "$FORCE" != "--force" ] && [ "$KIND" != scout ] && [ "$KIND" != secondmate ]; then
-    post_lock_cleanup_check=validate_worktree_teardown_safety
-  fi
-  teardown_treehouse_return "$WT" "$PROJ" "worktree" "$post_lock_cleanup_check" || {
-    echo "error: treehouse return failed for worktree $WT; teardown aborted" >&2
+  if worktree_registered_for_project "$PROJ" "$WT"; then
+    fm_git_worktree_remove "$PROJ" "$WT" 1 || {
+      echo "error: git worktree removal failed for $WT; teardown aborted" >&2
+      exit 1
+    }
+  else
+    echo "error: worktree $WT is not a registered Git worktree; preserving it" >&2
     exit 1
-  }
+  fi
 fi
 
 if [ "$BACKEND" != orca ]; then
