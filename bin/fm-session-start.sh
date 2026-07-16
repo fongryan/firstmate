@@ -200,6 +200,20 @@ else
   fi
 fi
 
+# Recover lifecycle state at every captain restart. The command is idempotent,
+# receipt-backed, and never removes worktrees. Read-only sessions must not import
+# legacy metadata because that import creates canonical lifecycle files; the
+# lock holder owns that repair. Reaping is deferred until after the fleet digest
+# has checked endpoint liveness, and receives the live ids as a protection set.
+subsection "LIFECYCLE RECOVERY"
+if [ "$READ_ONLY" -eq 1 ]; then
+  printf 'lifecycle-import: skipped (read-only session)\n'
+  FM_STATE_OVERRIDE="$STATE" "$SCRIPT_DIR/fm-lifecycle-reconcile.sh" 2>&1 || true
+else
+  FM_STATE_OVERRIDE="$STATE" "$SCRIPT_DIR/fm-lifecycle-import.sh" 2>&1 || true
+  FM_STATE_OVERRIDE="$STATE" "$SCRIPT_DIR/fm-lifecycle-reconcile.sh" 2>&1 || true
+fi
+
 # --- 4. supervision operating instructions ----------------------------------
 AFK_PRESENT=0
 [ -e "$STATE/.afk" ] && AFK_PRESENT=1
@@ -238,6 +252,7 @@ print_file_or_absent "$DATA/backlog.md" "data/backlog.md"
 
 subsection "In-flight tasks (state/*.meta)"
 META_FOUND=0
+LIVE_ENDPOINT_IDS=
 for meta in "$STATE"/*.meta; do
   [ -f "$meta" ] || continue
   META_FOUND=1
@@ -251,6 +266,7 @@ for meta in "$STATE"/*.meta; do
     backend=$(fm_backend_of_meta "$meta")
     if fm_backend_target_exists "$backend" "${target:-$window}" "fm-$id"; then
       printf 'endpoint: alive (backend=%s window=%s)\n' "$backend" "$window"
+      LIVE_ENDPOINT_IDS="${LIVE_ENDPOINT_IDS}${LIVE_ENDPOINT_IDS:+$'\n'}$id"
     else
       printf 'endpoint: dead (backend=%s window=%s)\n' "$backend" "$window"
     fi
@@ -266,6 +282,15 @@ for meta in "$STATE"/*.meta; do
   fi
 done
 [ "$META_FOUND" -eq 1 ] || printf '(none)\n'
+
+subsection "Lifecycle reaper"
+if [ "$READ_ONLY" -eq 1 ]; then
+  FM_LIFECYCLE_PROTECTED_IDS="$LIVE_ENDPOINT_IDS" \
+    FM_STATE_OVERRIDE="$STATE" "$SCRIPT_DIR/fm-lifecycle-reap.sh" --dry-run 2>&1 || true
+else
+  FM_LIFECYCLE_PROTECTED_IDS="$LIVE_ENDPOINT_IDS" \
+    FM_STATE_OVERRIDE="$STATE" "$SCRIPT_DIR/fm-lifecycle-reap.sh" --apply 2>&1 || true
+fi
 
 subsection "Orphan status logs (state/*.status without matching .meta)"
 ORPHAN_STATUS_FOUND=0

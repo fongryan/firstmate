@@ -3,11 +3,9 @@
 #
 # Usage:
 #   fm-home-seed.sh <id> <home|-> {<project>...|--no-projects}
-#       Provision <home> as an isolated firstmate home. If <home> is "-", acquire
-#       a fresh firstmate worktree via "treehouse get --lease", which durably
-#       leases the worktree under the secondmate <id> so the home survives with
-#       no live process and is never recycled until the lease is released with
-#       "treehouse return". Projects are cloned
+#       Provision <home> as an isolated firstmate home. If <home> is "-", create
+#       a fresh Git linked worktree under Firstmate's ordinary worktree root.
+#       Projects are cloned
 #       from the active home into the secondmate home's projects/ directory.
 #       That project list is non-exclusive provisioning data. Pass --no-projects
 #       instead of a project list to seed a project-less home for a domain whose
@@ -20,8 +18,8 @@
 #       data/secondmates.md is updated.
 #       Seeding is transactional: on validation, clone, init, or registry failure,
 #       generated briefs, new homes, new project clones, and registry edits are
-#       rolled back. Treehouse-acquired homes are returned only when the rollback
-#       target is safe; a failed return warns because the lease may still be held.
+#       rolled back. Git-created homes are removed only through Git's registered
+#       worktree API.
 #       Set FM_SECONDMATE_CHARTER='<charter>' to seed from inline charter text
 #       when no filled charter brief exists. Set FM_SECONDMATE_SCOPE='<scope>'
 #       to override the registry routing scope. Otherwise the registry summary
@@ -38,6 +36,8 @@ DATA="${FM_DATA_OVERRIDE:-$FM_HOME/data}"
 PROJECTS="${FM_PROJECTS_OVERRIDE:-$FM_HOME/projects}"
 REG="$DATA/secondmates.md"
 SUB_HOME_MARKER=".fm-secondmate-home"
+# shellcheck source=bin/fm-git-worktree.sh
+. "$SCRIPT_DIR/fm-git-worktree.sh"
 
 usage() {
   echo "usage: fm-home-seed.sh <id> <home|-> {<project>...|--no-projects}" >&2
@@ -464,24 +464,16 @@ seeded_origin_url() {
   normalize_origin_url "$dst" "$url"
 }
 
-acquire_treehouse_home() {
+acquire_git_home() {
   local id=$1 home
-  # Durably lease a firstmate worktree from the pool. The lease persists with no
-  # live process and is skipped by later get/prune, so the home survives restarts
-  # until teardown or rollback returns it. treehouse prints only the worktree path
-  # to stdout (banners go to stderr), so command substitution captures the path.
-  home=$(cd "$FM_ROOT" && treehouse get --lease --lease-holder "$id") || {
-    echo "error: treehouse get --lease failed to lease a firstmate home" >&2
-    return 1
-  }
-  [ -n "$home" ] || { echo "error: treehouse get --lease did not report a firstmate home" >&2; return 1; }
+  home=$(fm_git_worktree_create "$FM_ROOT" "secondmate-$id") || return 1
   printf '%s\n' "$home"
 }
 
 ensure_home() {
   local id=$1 requested=$2 home
   if [ "$requested" = "-" ]; then
-    home=$(acquire_treehouse_home "$id")
+    home=$(acquire_git_home "$id")
     verify_firstmate_home "$home"
     return
   fi
@@ -637,16 +629,11 @@ seed_rollback_target() {
   printf '%s\n' "$abs_target"
 }
 
-seed_return_treehouse_home() {
+seed_remove_git_home() {
   local home=$1 abs_home
-  abs_home=$(seed_rollback_target "$home" "treehouse-acquired home") || return 0
-  if ! command -v treehouse >/dev/null 2>&1; then
-    echo "warning: failed to return treehouse-acquired home $abs_home during seed rollback; treehouse command not found" >&2
-    return 0
-  fi
-  ( cd "$FM_ROOT" && treehouse return --force "$abs_home" >/dev/null ) || {
-    echo "warning: failed to return treehouse-acquired home $abs_home during seed rollback; lease may still be held" >&2
-    return 0
+  abs_home=$(seed_rollback_target "$home" "Git-created home") || return 0
+  fm_git_worktree_remove "$FM_ROOT" "$abs_home" 1 >/dev/null 2>&1 || {
+    echo "warning: failed to remove Git-created home $abs_home during seed rollback; preserving it" >&2
   }
 }
 
@@ -699,7 +686,7 @@ seed_rollback() {
 
   if [ -n "${SEED_HOME:-}" ] && [ "$SEED_HOME" != "/" ]; then
     if [ "$SEED_HOME_ACQUIRED" = 1 ]; then
-      seed_return_treehouse_home "$SEED_HOME"
+      seed_remove_git_home "$SEED_HOME"
     elif [ "$SEED_HOME_CREATED" = 1 ]; then
       seed_remove_created_home "$SEED_HOME"
     else
@@ -914,7 +901,7 @@ seed_home() {
 
   if [ "$requested_home" = "-" ]; then
     SEED_HOME_ACQUIRED=1
-    home=$(acquire_treehouse_home "$id")
+    home=$(acquire_git_home "$id")
     SEED_HOME="$home"
     home=$(verify_firstmate_home "$home")
   else

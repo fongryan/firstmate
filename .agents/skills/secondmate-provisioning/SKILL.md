@@ -53,10 +53,10 @@ bin/fm-home-seed.sh <id> <home|-> {<project>...|--no-projects}
 
 Pass `--no-projects` in the project position to seed the project-less home described above; the same mutual-exclusion and fail-loud-on-omission rules apply.
 It may only seed a home with no project clones or project-registry entries, and refuses conversion of populated homes without changing them.
-`-` durably leases a fresh firstmate worktree via `treehouse get --lease` under the secondmate id.
-The lease survives with no live process and is never recycled by later `treehouse get` or `prune`.
-The slot stays reserved across restarts until the lease is released.
-Release happens only on explicit retirement or seed rollback, never on routine restart or recovery.
+`-` creates a fresh firstmate linked worktree via Firstmate's Git worktree
+provider under the secondmate id.
+The registered worktree survives with no live process and is removed only
+through Git after teardown safety checks.
 
 `bin/fm-home-seed.sh` copies the charter into the secondmate home as `data/charter.md`.
 It also writes the required `.fm-secondmate-home` identity marker, which is gitignored and must remain in place for home validation.
@@ -144,10 +144,12 @@ Run `bin/fm-teardown.sh <id>` for `kind=secondmate` only when the captain or mai
 The safety check is the secondmate's own home.
 Teardown refuses while its `state/*.meta` contains in-flight work.
 When safe, teardown kills the direct tmux window, removes the `data/secondmates.md` route, clears the main home metadata, and removes the retired secondmate home.
-Removing a leased home releases its durable treehouse lease via `treehouse return`, so the pool slot is freed for reuse rather than left leased forever.
-A plain-clone home with no pool slot is simply removed.
-If `treehouse return` fails for a leased home, teardown stops with state intact rather than raw-removing the directory and hiding a held lease.
+Removing a Git-created home removes its registered linked worktree so Git's
+worktree metadata stays consistent.
+A plain-clone home with no registered worktree is simply removed.
+If Git worktree removal fails, teardown stops with state intact rather than
+raw-removing a directory it cannot prove safe.
 
 With `--force`, teardown is the explicit discard path.
-It kills child windows, discards child work and state inside the secondmate home, removes the route, releases the lease, and removes the retired secondmate home.
+It kills child windows, discards child work and state inside the secondmate home, removes the route, removes the registered worktree, and removes the retired secondmate home.
 Never use `--force` unless the captain explicitly said to discard the work.
