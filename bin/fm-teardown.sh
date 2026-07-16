@@ -143,7 +143,7 @@ ORCA_PATH_MATCH_VERIFIED=0
 KIND=$(grep '^kind=' "$META" | cut -d= -f2- || true)
 [ -n "$KIND" ] || KIND=ship
 MODE=$(grep '^mode=' "$META" | cut -d= -f2- || true)
-[ -n "$MODE" ] || MODE=direct-PR
+[ -n "$MODE" ] || MODE=no-mistakes
 
 default_branch() {
   local ref branch

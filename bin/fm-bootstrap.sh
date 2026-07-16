@@ -426,7 +426,7 @@ missing_tool_diagnostic() {
 # never told tmux is missing, and Orca remains the only backend with its own
 # worktree API. A backend value with no verified dependency set is reported
 # before the universal checks continue.
-COMMON_TOOLS="node git gh gh-axi chrome-devtools-axi lavish-axi tasks-axi quota-axi"
+COMMON_TOOLS="node git gh no-mistakes gh-axi chrome-devtools-axi lavish-axi tasks-axi quota-axi"
 BACKEND=$(fm_backend_name)
 BACKEND_VALID=1
 if ! BACKEND_TOOLS=$(fm_backend_required_tools "$BACKEND"); then
@@ -679,6 +679,9 @@ done
 for t in $COMMON_TOOLS; do
   command -v "$t" >/dev/null || missing_tool_diagnostic "$t"
 done
+if command -v no-mistakes >/dev/null 2>&1 && ! no_mistakes_compatible; then
+  echo "MISSING: no-mistakes (install: $(install_cmd no-mistakes))"
+fi
 if command -v tasks-axi >/dev/null 2>&1 && ! fm_tasks_axi_compatible; then
   echo "MISSING: tasks-axi (install: $(install_cmd tasks-axi))"
 fi
