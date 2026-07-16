@@ -184,7 +184,50 @@ fleet_sync() {
 fm_run_bounded() {
   local seconds=$1
   shift
-  perl -e 'my $t = shift; my $pid = fork; die "fork failed" unless defined $pid; if (!$pid) { setpgrp(0, 0); exec @ARGV } local $SIG{ALRM} = sub { kill "TERM", -$pid; select undef, undef, undef, 0.2; kill "KILL", -$pid; exit 124 }; alarm $t; waitpid $pid, 0; my $status = $?; exit(($status & 127) ? 128 + ($status & 127) : ($status >> 8))' "$seconds" "$@"
+  perl -MPOSIX -e '
+    my $timeout = shift;
+    pipe(my $ready_read, my $ready_write) or die "pipe failed: $!";
+    my $pid = fork;
+    die "fork failed: $!" unless defined $pid;
+    if (!$pid) {
+      close $ready_read;
+      my $session = POSIX::setsid();
+      if (!defined($session) || $session < 0) {
+        print {$ready_write} "0";
+        close $ready_write;
+        POSIX::_exit(125);
+      }
+      print {$ready_write} "1";
+      close $ready_write;
+      exec @ARGV;
+      POSIX::_exit(127);
+    }
+    close $ready_write;
+    my $ready = "";
+    sysread($ready_read, $ready, 1);
+    close $ready_read;
+    if ($ready ne "1") {
+      waitpid $pid, 0;
+      my $status = $?;
+      exit(($status & 127) ? 128 + ($status & 127) : ($status >> 8));
+    }
+    my $timed_out = 0;
+    local $SIG{ALRM} = sub {
+      $timed_out = 1;
+      kill "TERM", -$pid;
+    };
+    alarm $timeout;
+    waitpid $pid, 0;
+    my $status = $?;
+    alarm 0;
+    if ($timed_out) {
+      select undef, undef, undef, 0.2;
+      kill "KILL", -$pid;
+      waitpid $pid, 0;
+      exit 124;
+    }
+    exit(($status & 127) ? 128 + ($status & 127) : ($status >> 8));
+  ' "$seconds" "$@"
 }
 
 secondmate_sync() {
@@ -332,6 +375,7 @@ secondmate_liveness_sweep() {
     backend=$(fm_backend_of_meta "$meta")
     target=$(fm_backend_target_of_meta "$meta")
     [ -n "$target" ] || target="$window"
+    # shellcheck disable=SC2016 # Positional parameters expand inside the bounded child shell, not here.
     if verdict=$(fm_run_bounded "$liveness_timeout" bash -c '. "$1"; fm_backend_agent_alive "$2" "$3"' _ "$SCRIPT_DIR/fm-backend.sh" "$backend" "$target" 2>/dev/null); then
       probe_rc=0
     else
