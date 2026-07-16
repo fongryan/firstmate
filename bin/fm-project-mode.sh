@@ -1,10 +1,9 @@
 #!/usr/bin/env bash
 # Resolve a project's delivery mode and yolo flag from the data/projects.md registry.
-# Prints two words to stdout: "<mode> <yolo>" where mode is one of
-# no-mistakes|direct-PR|local-only and yolo is on|off.
+# Prints two words to stdout: "<mode> <yolo>". The active mode is mainline.
 #
 # Registry line format (data/projects.md):
-#   - <name> - <desc> (added <date>)                  -> no-mistakes off  (legacy default)
+#   - <name> - <desc> (added <date>)                  -> mainline off
 #   - <name> [<mode>] - <desc> (added <date>)          -> <mode> off
 #   - <name> [<mode> +yolo] - <desc> (added <date>)    -> <mode> on
 #
@@ -16,7 +15,7 @@
 #   ask-user findings, local-only merge approval) without checking the captain - except
 #   anything destructive/irreversible/security-sensitive, which still escalates.
 #
-# An unknown/missing project or unknown mode falls back to "no-mistakes off" and warns
+# An unknown/missing project or unknown mode falls back to "mainline off" and warns
 # to stderr, so a typo never silently drops the gate.
 # Usage: fm-project-mode.sh <project-name>
 set -eu
@@ -29,15 +28,15 @@ REG="$DATA/projects.md"
 NAME=${1:?usage: fm-project-mode.sh <project-name>}
 
 if [ ! -f "$REG" ]; then
-  echo "warn: no registry at $REG; defaulting $NAME to no-mistakes off" >&2
-  echo "no-mistakes off"
+  echo "warn: no registry at $REG; defaulting $NAME to mainline off" >&2
+  echo "mainline off"
   exit 0
 fi
 
 # awk emits "<mode> <yolo>" (one line) or nothing if the project is absent.
 parsed=$(awk -v n="$NAME" '
   $1=="-" && $2==n {
-    mode="no-mistakes"; yolo="off";
+    mode="mainline"; yolo="off";
     if ($3 ~ /^\[/) {
       s="";
       for (i=3; i<=NF; i++) { s = s (s==""?"":" ") $i; if ($i ~ /\]$/) break }
@@ -51,16 +50,17 @@ parsed=$(awk -v n="$NAME" '
 ' "$REG")
 
 if [ -z "$parsed" ]; then
-  echo "warn: project \"$NAME\" not in registry; defaulting to no-mistakes off" >&2
-  echo "no-mistakes off"
+  echo "warn: project \"$NAME\" not in registry; defaulting to mainline off" >&2
+  echo "mainline off"
   exit 0
 fi
 
 mode=${parsed%% *}
 yolo=${parsed##* }
 case "$mode" in
-  no-mistakes|direct-PR|local-only) ;;
-  *) echo "warn: unknown mode \"$mode\" for $NAME; defaulting to no-mistakes off" >&2; mode=no-mistakes; yolo=off ;;
+  mainline|local-only|direct-PR|no-mistakes) ;;
+  *) echo "warn: unknown mode \"$mode\" for $NAME; defaulting to mainline off" >&2; mode=mainline; yolo=off ;;
 esac
+case "$mode" in no-mistakes|direct-PR|local-only) mode=mainline ;; esac
 case "$yolo" in on|off) ;; *) yolo=off ;; esac
 echo "$mode $yolo"
