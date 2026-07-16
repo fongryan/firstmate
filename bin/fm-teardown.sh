@@ -52,7 +52,6 @@
 #   unqueryable endpoints and secondmates. If Grok auth exists, it is revoked
 #   before its Firstmate token pointer is cleared.
 #
-=======
 # Transient / stale worktree git lock recovery (teardown-lock-race): a crew process
 # killed mid-git-operation can leave a .git/worktrees/<wt>/index.lock (or, for a
 # non-linked worktree, .git/index.lock) that makes `treehouse return --force` fail
@@ -82,7 +81,6 @@
 # is present; teardown clears only a provably stale lock, then re-runs the safety
 # checks before any destructive return. Teardown output notes every wait, retry, and
 # removal so the operator can see what happened.
->>>>>>> origin/main
 set -eu
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -97,7 +95,6 @@ SUB_HOME_MARKER=".fm-secondmate-home"
 . "$SCRIPT_DIR/fm-tasks-axi-lib.sh"
 # shellcheck source=bin/fm-backend.sh
 . "$SCRIPT_DIR/fm-backend.sh"
-<<<<<<< HEAD
 # shellcheck source=bin/fm-git-worktree.sh
 . "$SCRIPT_DIR/fm-git-worktree.sh"
 # shellcheck source=bin/fm-lock-lib.sh

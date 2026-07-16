@@ -1,6 +1,5 @@
 # Per-repo no-mistakes overrides.
 
-<<<<<<< HEAD
 # firstmate is an agent-orchestration repo: its AGENTS.md installs a fleet-captain
 # identity. Disable project-level agent settings/instructions for gate agents so a
 # no-mistakes review/fix/document/test/lint/pr/rebase/ci agent never adopts that
@@ -10,8 +9,7 @@
 # HEAD-continuity guard; see docs/architecture.md "No-mistakes gate authority boundary."
 disable_project_settings: true
 
-=======
->>>>>>> origin/main
+
 # Pin lint and test to the SAME deterministic commands CI runs, instead of
 # leaving them to no-mistakes' default handling. Without a configured
 # commands.lint, the gate's lint step never ran the deterministic

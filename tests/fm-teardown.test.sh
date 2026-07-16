@@ -1274,7 +1274,6 @@ SH
   pass "herdr teardown removes pane-owned escalation dedupe state"
 }
 
-=======
 test_metadata_only_preserves_worktree_and_clears_terminal_state() {
   local case_dir before_head before_status after_head after_status
   case_dir=$(make_case metadata-only-terminal)
@@ -1584,7 +1583,6 @@ SH
   pass "metadata-only teardown uses exact tmux window inventory instead of target fallback"
 }
 
->>>>>>> origin/main
 test_local_only_fork_remote_allows
 test_teardown_prompts_tasks_axi_done_when_compatible
 test_teardown_manual_backend_prompts_hand_edit_even_when_tasks_axi_present
@@ -1605,7 +1603,6 @@ test_content_in_default_fallback_allows
 test_content_fallback_refreshes_stale_origin_ref
 test_dirty_worktree_refuses
 test_gh_error_and_content_absent_refuses
-<<<<<<< HEAD
 test_stale_index_lock_cleared_and_teardown_succeeds
 test_live_index_lock_is_never_removed_and_teardown_refuses
 test_lsof_error_never_clears_index_lock
