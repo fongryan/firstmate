@@ -38,10 +38,16 @@
 # leased home releases its durable treehouse lease so the pool slot is freed,
 # never left leased forever. If the treehouse return fails, teardown leaves the
 # leased home and state in place instead of hiding a still-held lease.
-# Usage: fm-teardown.sh <task-id> [--force]
+# Usage: fm-teardown.sh <task-id> [--force|--metadata-only]
 #   --force skips ordinary-task dirty and landed-work checks, skips scout report
 #   checks, and discards secondmate child work for kind=secondmate. Only use it
 #   when the captain has explicitly said to discard the work.
+#   --metadata-only reconciles a dead, terminal stale record without touching its
+#   worktree, branch, refs, worktree hooks, runtime processes, or task temp
+#   directory. It accepts a ship record only with a final explicit superseded:
+#   event, or a scout record with its report present; it refuses live or
+#   unqueryable endpoints and secondmates. If Grok auth exists, it is revoked
+#   before its Firstmate token pointer is cleared.
 #
 # Transient / stale worktree git lock recovery (teardown-lock-race): a crew process
 # killed mid-git-operation can leave a .git/worktrees/<wt>/index.lock (or, for a
@@ -91,7 +97,18 @@ SUB_HOME_MARKER=".fm-secondmate-home"
 FM_LOCK_LOG_PREFIX=teardown
 "$FM_ROOT/bin/fm-guard.sh" || true
 ID=$1
-FORCE=${2:-}
+ACTION=${2:-}
+FORCE=
+METADATA_ONLY=0
+case "$ACTION" in
+  '') ;;
+  --force) FORCE=--force ;;
+  --metadata-only) METADATA_ONLY=1 ;;
+  *)
+    echo "error: unknown teardown option $ACTION; expected --force or --metadata-only" >&2
+    exit 2
+    ;;
+esac
 
 META="$STATE/$ID.meta"
 [ -f "$META" ] || { echo "error: no meta for task $ID at $META" >&2; exit 1; }
@@ -332,6 +349,134 @@ backlog_refresh_reminder() {
     printf '%s\n' "Backlog: $ID just finished. Update data/backlog.md - move $ID to Done, keep Done to the 10 most recent, then re-scan Queued and dispatch only work whose blockers are gone and date is due."
   fi
 }
+
+metadata_only_has_terminal_evidence() {
+  local report last_event
+  case "$KIND" in
+    scout)
+      report="$DATA/$ID/report.md"
+      [ -f "$report" ]
+      ;;
+    secondmate)
+      return 1
+      ;;
+    *)
+      last_event=$(sed -n '/[^[:space:]]/p' "$STATE/$ID.status" 2>/dev/null | tail -1 || true)
+      case "$last_event" in
+        superseded:*) return 0 ;;
+      esac
+      return 1
+      ;;
+  esac
+}
+
+# Metadata-only reconciliation needs a stronger answer than the shared
+# presence probe's boolean. Limit the first release to tmux, where we can prove
+# one of three states without starting a server:
+#   alive   exact target resolves;
+#   dead    the server was queried successfully and the target did not resolve,
+#           or tmux confirms that no server exists at all;
+#   unknown missing CLI, malformed target, permission/socket/query failure, or
+#           any backend whose tri-state behavior has not been verified.
+metadata_only_endpoint_state() {
+  local out rc
+  [ -n "$T" ] || { printf 'unknown'; return 0; }
+  [ "$BACKEND" = tmux ] || { printf 'unknown'; return 0; }
+  command -v tmux >/dev/null 2>&1 || { printf 'unknown'; return 0; }
+
+  if tmux display-message -p -t "$T" '#{pane_id}' >/dev/null 2>&1; then
+    printf 'alive'
+    return 0
+  fi
+
+  set +e
+  out=$(tmux list-panes -a -F '#{pane_id}' 2>&1)
+  rc=$?
+  set -e
+  if [ "$rc" -eq 0 ]; then
+    printf 'dead'
+    return 0
+  fi
+  case "$out" in
+    *"no server running on "*) printf 'dead' ;;
+    *) printf 'unknown' ;;
+  esac
+}
+
+revoke_metadata_only_grok_auth() {
+  local token_path token auth_path
+  token_path="$STATE/$ID.grok-turnend-token"
+  [ -f "$token_path" ] || return 0
+  if ! token=$(cat "$token_path" 2>/dev/null); then
+    echo "REFUSED: metadata-only teardown cannot read the Grok auth token pointer for $ID; preserving state for manual revocation." >&2
+    return 1
+  fi
+  case "$token" in
+    '')
+      echo "REFUSED: metadata-only teardown found an empty Grok auth token pointer for $ID; preserving state for manual revocation." >&2
+      return 1
+      ;;
+    *[!A-Za-z0-9._-]*)
+      echo "REFUSED: metadata-only teardown found an invalid Grok auth token pointer for $ID; preserving state for manual revocation." >&2
+      return 1
+      ;;
+  esac
+  remove_grok_turnend_auth "$STATE" "$ID" || return 1
+  auth_path="${GROK_HOME:-$HOME/.grok}/hooks/fm-turn-end.d/$token"
+  if [ -e "$auth_path" ]; then
+    echo "REFUSED: metadata-only teardown could not revoke Grok auth at $auth_path; preserving Firstmate state." >&2
+    return 1
+  fi
+}
+
+metadata_only_teardown() {
+  local endpoint_state
+  if [ "$KIND" = secondmate ]; then
+    echo "REFUSED: metadata-only teardown cannot retire persistent secondmate $ID." >&2
+    echo "Use the explicit secondmate retirement contract after inspecting its child home." >&2
+    return 1
+  fi
+
+  endpoint_state=$(metadata_only_endpoint_state)
+  if [ "$endpoint_state" = alive ]; then
+    echo "REFUSED: metadata-only teardown requires a dead endpoint; $BACKEND target $T still exists." >&2
+    echo "Stop or reconcile the live owner before clearing Firstmate state." >&2
+    return 1
+  fi
+  if [ "$endpoint_state" != dead ]; then
+    echo "REFUSED: metadata-only teardown could not confirm the endpoint is dead; $BACKEND target ${T:-<missing>} is unqueryable or unsupported." >&2
+    echo "Restore a verified backend probe or use the ordinary lifecycle path; Firstmate state remains intact." >&2
+    return 1
+  fi
+
+  if ! metadata_only_has_terminal_evidence; then
+    if [ "$KIND" = scout ]; then
+      echo "REFUSED: metadata-only scout teardown requires its report at $DATA/$ID/report.md." >&2
+    else
+      echo "REFUSED: metadata-only teardown requires an explicit terminal superseded: event in $STATE/$ID.status for ship tasks." >&2
+    fi
+    echo "The worktree is preserved and the stale record remains intact." >&2
+    return 1
+  fi
+
+  # Revoke global Grok auth before destroying its cleanup provenance. The
+  # worktree pointer is deliberately preserved and becomes inert after revoke.
+  revoke_metadata_only_grok_auth || return 1
+
+  # Deliberately state-only apart from the auth revocation above. Do not kill a
+  # backend target, inspect or alter the worktree, detach/delete a branch,
+  # remove worktree hooks, return a pool slot, delete tasktmp, fetch/sync a
+  # project clone, or touch any other external harness state.
+  rm -f "$STATE/$ID.status" "$STATE/$ID.turn-ended" "$STATE/$ID.check.sh" \
+    "$STATE/$ID.meta" "$STATE/$ID.pi-ext.ts" "$STATE/$ID.grok-turnend-token"
+  echo "metadata-only teardown $ID complete; preserved worktree ${WT:-<missing>}"
+  backlog_refresh_reminder
+}
+
+if [ "$METADATA_ONLY" = 1 ]; then
+  metadata_only_teardown
+  exit $?
+fi
 
 registry_home_for_line() {
   sed -n 's/^[^(]*(home: \([^;)]*\);.*/\1/p'

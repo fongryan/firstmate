@@ -49,6 +49,15 @@
 #   (w) index.lock mtime read failure                         -> lock kept, REFUSE
 #   (x) transient lock cleared after first failed return      -> retry ALLOW
 #   (y) persistent lock (never clears, not provably stale)    -> REFUSE loudly
+#   (z) metadata-only + terminal dead task                    -> clear state only
+#   (aa) metadata-only + live endpoint                        -> REFUSE fail closed
+#   (ab) metadata-only + non-terminal ship                    -> REFUSE fail closed
+#   (ac) metadata-only + dead scout report                     -> clear state only
+#   (ad) metadata-only + secondmate                            -> REFUSE fail closed
+#   (ae) metadata-only + unqueryable/unknown backend           -> REFUSE fail closed
+#   (af) metadata-only + done-ready-to-validate                -> REFUSE fail closed
+#   (ag) metadata-only + Grok auth                             -> revoke, preserve pointer
+#   (ah) metadata-only + empty/unreadable Grok token            -> REFUSE fail closed
 set -u
 
 # shellcheck source=tests/lib.sh disable=SC1091
@@ -1263,6 +1272,265 @@ SH
   pass "herdr teardown removes pane-owned escalation dedupe state"
 }
 
+test_metadata_only_preserves_worktree_and_clears_terminal_state() {
+  local case_dir before_head before_status after_head after_status
+  case_dir=$(make_case metadata-only-terminal)
+  write_meta "$case_dir" no-mistakes ship
+  printf '%s\n' 'superseded: content landed elsewhere and this record is stale' > "$case_dir/state/task-x1.status"
+  printf '%s\n' 'preserve me' > "$case_dir/wt/dirty-preserved.txt"
+  before_head=$(git -C "$case_dir/wt" rev-parse HEAD)
+  before_status=$(git -C "$case_dir/wt" status --porcelain=v1)
+
+  cat > "$case_dir/fakebin/tmux" <<'SH'
+#!/usr/bin/env bash
+case "${1:-}" in
+  display-message) exit 1 ;;
+  list-panes) exit 0 ;;
+  *) echo "unexpected tmux mutation: $*" >&2; exit 97 ;;
+esac
+SH
+  cat > "$case_dir/fakebin/treehouse" <<'SH'
+#!/usr/bin/env bash
+echo "unexpected treehouse mutation: $*" >&2
+exit 98
+SH
+  chmod +x "$case_dir/fakebin/tmux" "$case_dir/fakebin/treehouse"
+
+  run_teardown "$case_dir" --metadata-only > "$case_dir/stdout" 2> "$case_dir/stderr" \
+    || fail "metadata-only-terminal: reconciliation failed: $(cat "$case_dir/stderr")"
+
+  [ ! -e "$case_dir/state/task-x1.meta" ] || fail "metadata-only-terminal: stale meta remains"
+  [ ! -e "$case_dir/state/task-x1.status" ] || fail "metadata-only-terminal: stale status remains"
+  [ -f "$case_dir/wt/dirty-preserved.txt" ] || fail "metadata-only-terminal: dirty worktree file was touched"
+  after_head=$(git -C "$case_dir/wt" rev-parse HEAD)
+  after_status=$(git -C "$case_dir/wt" status --porcelain=v1)
+  [ "$after_head" = "$before_head" ] || fail "metadata-only-terminal: HEAD changed"
+  [ "$after_status" = "$before_status" ] || fail "metadata-only-terminal: worktree status changed"
+  assert_grep 'metadata-only teardown task-x1 complete; preserved worktree' "$case_dir/stdout" \
+    "metadata-only-terminal: preservation receipt missing"
+  pass "metadata-only teardown clears terminal Firstmate state without touching dirty worktree state"
+}
+
+test_metadata_only_refuses_live_endpoint() {
+  local case_dir rc
+  case_dir=$(make_case metadata-only-live)
+  write_meta "$case_dir" no-mistakes ship
+  printf '%s\n' 'superseded: terminal evidence' > "$case_dir/state/task-x1.status"
+  # make_case's tmux shim reports success, which represents a live endpoint.
+  set +e
+  run_teardown "$case_dir" --metadata-only > "$case_dir/stdout" 2> "$case_dir/stderr"
+  rc=$?
+  set -e
+  expect_code 1 "$rc" "metadata-only-live: live endpoint must refuse"
+  [ -e "$case_dir/state/task-x1.meta" ] || fail "metadata-only-live: meta removed despite live endpoint"
+  assert_grep 'REFUSED: metadata-only teardown requires a dead endpoint' "$case_dir/stderr" \
+    "metadata-only-live: missing fail-closed error"
+  pass "metadata-only teardown refuses a live recorded endpoint"
+}
+
+test_metadata_only_refuses_nonterminal_ship() {
+  local case_dir rc
+  case_dir=$(make_case metadata-only-nonterminal)
+  write_meta "$case_dir" no-mistakes ship
+  printf '%s\n' 'blocked: proof is incomplete' > "$case_dir/state/task-x1.status"
+  cat > "$case_dir/fakebin/tmux" <<'SH'
+#!/usr/bin/env bash
+case "${1:-}" in
+  display-message) exit 1 ;;
+  list-panes) exit 0 ;;
+  *) exit 1 ;;
+esac
+SH
+  chmod +x "$case_dir/fakebin/tmux"
+  set +e
+  run_teardown "$case_dir" --metadata-only > "$case_dir/stdout" 2> "$case_dir/stderr"
+  rc=$?
+  set -e
+  expect_code 1 "$rc" "metadata-only-nonterminal: blocked task must refuse"
+  [ -e "$case_dir/state/task-x1.meta" ] || fail "metadata-only-nonterminal: meta removed without terminal evidence"
+  assert_grep 'REFUSED: metadata-only teardown requires an explicit terminal superseded: event' "$case_dir/stderr" \
+    "metadata-only-nonterminal: missing terminal-evidence error"
+  pass "metadata-only teardown refuses non-terminal ship records"
+}
+
+test_metadata_only_accepts_dead_scout_with_report() {
+  local case_dir
+  case_dir=$(make_case metadata-only-scout)
+  write_meta "$case_dir" no-mistakes scout
+  mkdir -p "$case_dir/data/task-x1"
+  printf '%s\n' '# completed scout report' > "$case_dir/data/task-x1/report.md"
+  cat > "$case_dir/fakebin/tmux" <<'SH'
+#!/usr/bin/env bash
+case "${1:-}" in
+  display-message) exit 1 ;;
+  list-panes) exit 0 ;;
+  *) exit 1 ;;
+esac
+SH
+  chmod +x "$case_dir/fakebin/tmux"
+
+  FM_ROOT_OVERRIDE="$ROOT" \
+  FM_STATE_OVERRIDE="$case_dir/state" \
+  FM_DATA_OVERRIDE="$case_dir/data" \
+  FM_CONFIG_OVERRIDE="$case_dir/config" \
+  PATH="$case_dir/fakebin:$PATH" \
+    "$TEARDOWN" task-x1 --metadata-only > "$case_dir/stdout" 2> "$case_dir/stderr" \
+    || fail "metadata-only-scout: reconciliation failed: $(cat "$case_dir/stderr")"
+  [ ! -e "$case_dir/state/task-x1.meta" ] || fail "metadata-only-scout: stale meta remains"
+  [ -f "$case_dir/data/task-x1/report.md" ] || fail "metadata-only-scout: report was touched"
+  [ -d "$case_dir/wt" ] || fail "metadata-only-scout: worktree was touched"
+  pass "metadata-only teardown accepts a dead scout with its durable report"
+}
+
+test_metadata_only_refuses_secondmate() {
+  local case_dir rc
+  case_dir=$(make_case metadata-only-secondmate)
+  write_meta "$case_dir" no-mistakes secondmate
+  cat > "$case_dir/fakebin/tmux" <<'SH'
+#!/usr/bin/env bash
+exit 1
+SH
+  chmod +x "$case_dir/fakebin/tmux"
+  set +e
+  run_teardown "$case_dir" --metadata-only > "$case_dir/stdout" 2> "$case_dir/stderr"
+  rc=$?
+  set -e
+  expect_code 1 "$rc" "metadata-only-secondmate: persistent supervisor must refuse"
+  [ -e "$case_dir/state/task-x1.meta" ] || fail "metadata-only-secondmate: meta removed despite refusal"
+  assert_grep 'REFUSED: metadata-only teardown cannot retire persistent secondmate' "$case_dir/stderr" \
+    "metadata-only-secondmate: missing retirement error"
+  pass "metadata-only teardown refuses persistent secondmates"
+}
+
+test_metadata_only_refuses_unqueryable_or_unknown_backend() {
+  local case_dir rc
+  case_dir=$(make_case metadata-only-probe-unknown)
+  write_meta "$case_dir" no-mistakes ship
+  printf '%s\n' 'superseded: stale record' > "$case_dir/state/task-x1.status"
+  cat > "$case_dir/fakebin/tmux" <<'SH'
+#!/usr/bin/env bash
+# Neither a successful fleet query nor the exact no-server result: unknown.
+echo 'permission denied while querying backend' >&2
+exit 1
+SH
+  chmod +x "$case_dir/fakebin/tmux"
+  set +e
+  run_teardown "$case_dir" --metadata-only > "$case_dir/stdout" 2> "$case_dir/stderr"
+  rc=$?
+  set -e
+  expect_code 1 "$rc" "metadata-only-probe-unknown: probe failure must refuse"
+  [ -e "$case_dir/state/task-x1.meta" ] || fail "metadata-only-probe-unknown: meta removed after ambiguous probe"
+  assert_grep 'REFUSED: metadata-only teardown could not confirm the endpoint is dead' "$case_dir/stderr" \
+    "metadata-only-probe-unknown: missing unknown-state refusal"
+
+  printf '%s\n' 'backend=unverified-backend' >> "$case_dir/state/task-x1.meta"
+  set +e
+  run_teardown "$case_dir" --metadata-only > "$case_dir/stdout-unknown" 2> "$case_dir/stderr-unknown"
+  rc=$?
+  set -e
+  expect_code 1 "$rc" "metadata-only-unknown-backend: unknown backend must refuse"
+  [ -e "$case_dir/state/task-x1.meta" ] || fail "metadata-only-unknown-backend: meta removed"
+  pass "metadata-only teardown refuses ambiguous probes and unknown backends"
+}
+
+test_metadata_only_refuses_done_ready_to_validate() {
+  local case_dir rc
+  case_dir=$(make_case metadata-only-done-validating)
+  write_meta "$case_dir" no-mistakes ship
+  printf '%s\n' 'done: implementation complete, ready to validate' > "$case_dir/state/task-x1.status"
+  cat > "$case_dir/fakebin/tmux" <<'SH'
+#!/usr/bin/env bash
+case "${1:-}" in
+  display-message) exit 1 ;;
+  list-panes) exit 0 ;;
+  *) exit 1 ;;
+esac
+SH
+  chmod +x "$case_dir/fakebin/tmux"
+  set +e
+  run_teardown "$case_dir" --metadata-only > "$case_dir/stdout" 2> "$case_dir/stderr"
+  rc=$?
+  set -e
+  expect_code 1 "$rc" "metadata-only-done-validating: done-ready status must refuse"
+  [ -e "$case_dir/state/task-x1.meta" ] || fail "metadata-only-done-validating: meta removed"
+  pass "metadata-only teardown does not mistake done-ready-to-validate for retirement evidence"
+}
+
+test_metadata_only_revokes_grok_auth_and_preserves_worktree_pointer() {
+  local case_dir grok_home token
+  case_dir=$(make_case metadata-only-grok)
+  write_meta "$case_dir" no-mistakes ship
+  printf '%s\n' 'superseded: stale record' > "$case_dir/state/task-x1.status"
+  token='task-x1-safe-token'
+  printf '%s\n' "$token" > "$case_dir/state/task-x1.grok-turnend-token"
+  printf '%s\n' "$token" > "$case_dir/wt/.fm-grok-turnend"
+  grok_home="$case_dir/grok-home"
+  mkdir -p "$grok_home/hooks/fm-turn-end.d"
+  printf '%s\n' 'credential material' > "$grok_home/hooks/fm-turn-end.d/$token"
+  cat > "$case_dir/fakebin/tmux" <<'SH'
+#!/usr/bin/env bash
+case "${1:-}" in
+  display-message) exit 1 ;;
+  list-panes) exit 0 ;;
+  *) exit 1 ;;
+esac
+SH
+  chmod +x "$case_dir/fakebin/tmux"
+
+  GROK_HOME="$grok_home" run_teardown "$case_dir" --metadata-only > "$case_dir/stdout" 2> "$case_dir/stderr" \
+    || fail "metadata-only-grok: reconciliation failed: $(cat "$case_dir/stderr")"
+  [ ! -e "$grok_home/hooks/fm-turn-end.d/$token" ] || fail "metadata-only-grok: global auth credential remains"
+  [ -f "$case_dir/wt/.fm-grok-turnend" ] || fail "metadata-only-grok: worktree pointer was modified"
+  [ ! -e "$case_dir/state/task-x1.grok-turnend-token" ] || fail "metadata-only-grok: active state token remains"
+  pass "metadata-only teardown revokes Grok auth without modifying the preserved worktree pointer"
+}
+
+test_metadata_only_refuses_empty_or_unreadable_grok_token() {
+  local case_dir rc token_file
+  case_dir=$(make_case metadata-only-grok-invalid)
+  write_meta "$case_dir" no-mistakes ship
+  printf '%s\n' 'superseded: stale record' > "$case_dir/state/task-x1.status"
+  token_file="$case_dir/state/task-x1.grok-turnend-token"
+  : > "$token_file"
+  cat > "$case_dir/fakebin/tmux" <<'SH'
+#!/usr/bin/env bash
+case "${1:-}" in
+  display-message) exit 1 ;;
+  list-panes) exit 0 ;;
+  *) exit 1 ;;
+esac
+SH
+  chmod +x "$case_dir/fakebin/tmux"
+
+  set +e
+  run_teardown "$case_dir" --metadata-only > "$case_dir/stdout-empty" 2> "$case_dir/stderr-empty"
+  rc=$?
+  set -e
+  expect_code 1 "$rc" "metadata-only-grok-empty: empty token must refuse"
+  [ -e "$case_dir/state/task-x1.meta" ] || fail "metadata-only-grok-empty: meta removed"
+  [ -e "$case_dir/state/task-x1.status" ] || fail "metadata-only-grok-empty: status removed"
+  [ -e "$token_file" ] || fail "metadata-only-grok-empty: token provenance removed"
+
+  printf '%s\n' 'unreadable-token' > "$token_file"
+  cat > "$case_dir/fakebin/cat" <<'SH'
+#!/usr/bin/env bash
+case "${1:-}" in
+  *task-x1.grok-turnend-token) exit 77 ;;
+  *) exec /bin/cat "$@" ;;
+esac
+SH
+  chmod +x "$case_dir/fakebin/cat"
+  set +e
+  run_teardown "$case_dir" --metadata-only > "$case_dir/stdout-unreadable" 2> "$case_dir/stderr-unreadable"
+  rc=$?
+  set -e
+  expect_code 1 "$rc" "metadata-only-grok-unreadable: read failure must refuse"
+  [ -e "$case_dir/state/task-x1.meta" ] || fail "metadata-only-grok-unreadable: meta removed"
+  [ -e "$case_dir/state/task-x1.status" ] || fail "metadata-only-grok-unreadable: status removed"
+  [ -e "$token_file" ] || fail "metadata-only-grok-unreadable: token provenance removed"
+  pass "metadata-only teardown preserves all state for empty or unreadable Grok token provenance"
+}
+
 test_local_only_fork_remote_allows
 test_teardown_prompts_tasks_axi_done_when_compatible
 test_teardown_manual_backend_prompts_hand_edit_even_when_tasks_axi_present
@@ -1293,3 +1561,12 @@ test_transient_index_lock_clears_after_first_attempt_and_retry_succeeds
 test_persistent_index_lock_exhausts_retries_and_refuses_loudly
 test_empty_retry_wait_uses_default_without_aborting
 test_fractional_legacy_retry_wait_refuses_without_arithmetic_error
+test_metadata_only_preserves_worktree_and_clears_terminal_state
+test_metadata_only_refuses_live_endpoint
+test_metadata_only_refuses_nonterminal_ship
+test_metadata_only_accepts_dead_scout_with_report
+test_metadata_only_refuses_secondmate
+test_metadata_only_refuses_unqueryable_or_unknown_backend
+test_metadata_only_refuses_done_ready_to_validate
+test_metadata_only_revokes_grok_auth_and_preserves_worktree_pointer
+test_metadata_only_refuses_empty_or_unreadable_grok_token
