@@ -58,6 +58,7 @@
 #   (af) metadata-only + done-ready-to-validate                -> REFUSE fail closed
 #   (ag) metadata-only + Grok auth                             -> revoke, preserve pointer
 #   (ah) metadata-only + empty/unreadable Grok token            -> REFUSE fail closed
+#   (ai) metadata-only + absent tmux server socket              -> confirmed dead
 set -u
 
 # shellcheck source=tests/lib.sh disable=SC1091
@@ -1531,6 +1532,24 @@ SH
   pass "metadata-only teardown preserves all state for empty or unreadable Grok token provenance"
 }
 
+test_metadata_only_accepts_absent_tmux_server_socket() {
+  local case_dir
+  case_dir=$(make_case metadata-only-no-tmux-socket)
+  write_meta "$case_dir" no-mistakes ship
+  printf '%s\n' 'superseded: stale record' > "$case_dir/state/task-x1.status"
+  cat > "$case_dir/fakebin/tmux" <<'SH'
+#!/usr/bin/env bash
+echo 'error connecting to /private/tmp/tmux-501/default (No such file or directory)' >&2
+exit 1
+SH
+  chmod +x "$case_dir/fakebin/tmux"
+  run_teardown "$case_dir" --metadata-only > "$case_dir/stdout" 2> "$case_dir/stderr" \
+    || fail "metadata-only-no-tmux-socket: absent server socket was not confirmed dead: $(cat "$case_dir/stderr")"
+  [ ! -e "$case_dir/state/task-x1.meta" ] || fail "metadata-only-no-tmux-socket: stale meta remains"
+  [ -d "$case_dir/wt" ] || fail "metadata-only-no-tmux-socket: worktree was touched"
+  pass "metadata-only teardown treats the exact absent tmux server socket signature as confirmed dead"
+}
+
 test_local_only_fork_remote_allows
 test_teardown_prompts_tasks_axi_done_when_compatible
 test_teardown_manual_backend_prompts_hand_edit_even_when_tasks_axi_present
@@ -1570,3 +1589,4 @@ test_metadata_only_refuses_unqueryable_or_unknown_backend
 test_metadata_only_refuses_done_ready_to_validate
 test_metadata_only_revokes_grok_auth_and_preserves_worktree_pointer
 test_metadata_only_refuses_empty_or_unreadable_grok_token
+test_metadata_only_accepts_absent_tmux_server_socket

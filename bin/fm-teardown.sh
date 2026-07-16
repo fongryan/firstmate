@@ -399,6 +399,7 @@ metadata_only_endpoint_state() {
   fi
   case "$out" in
     *"no server running on "*) printf 'dead' ;;
+    *"error connecting to "*"(No such file or directory)"*) printf 'dead' ;;
     *) printf 'unknown' ;;
   esac
 }
