@@ -27,6 +27,10 @@ test_admission() {
   [ "$status" -ne 0 ] || fail "duplicate active objective should be rejected"
   case "$out" in *duplicate*) : ;; *) fail "duplicate rejection lacks reason" ;; esac
 
+  out=$(FM_STATE_OVERRIDE="$STATE" "$ADMIT" --id existing --repo app --objective "ship auth" --wip 1 2>&1) \
+    || fail "the same task id should be admitted for a receipt-backed runtime restart"
+  case "$out" in *admitted*) : ;; *) fail "restart admission output missing" ;; esac
+
   out=$(FM_STATE_OVERRIDE="$STATE" "$ADMIT" --repo app --objective "ship billing" --wip 1 2>&1)
   status=$?
   [ "$status" -ne 0 ] || fail "wip exhaustion should be rejected"

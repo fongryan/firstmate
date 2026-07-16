@@ -14,7 +14,6 @@
 
 set -uo pipefail
 
-FM_ROOT="/Users/ryanfong/workspace/firstmate"
 FS_ROOT="/Users/ryanfong/workspace/firstmate/projects/flowstate"
 BRAIN_ROOT="/Users/ryanfong/workspace/firstmate/projects/brain"
 LOG="/Users/ryanfong/.hermes/logs/cockpit-daily.log"
@@ -32,12 +31,12 @@ python3 "$HOME/.flowstate-firstmate/bin/fm-aggregate.py" 2>&1 | tail -5 | tee -a
 
 # Step 2: flowstate projector (writes fleet.json with profile lane)
 log "step 2/3: flowstate projector"
-cd "$FS_ROOT"
+cd "$FS_ROOT" || exit 1
 node projector/flowstate-projector.mjs --once 2>&1 | tail -3 | tee -a "$LOG"
 
 # Step 3: brain profile compact (refresh PROFILE.compact.md)
 log "step 3/3: brain profile compact"
-cd "$BRAIN_ROOT"
+cd "$BRAIN_ROOT" || exit 1
 node tools/brain-cli.mjs profile compact 2>&1 | head -3 | tee -a "$LOG"
 
 log "=== Cockpit daily refresh complete ==="

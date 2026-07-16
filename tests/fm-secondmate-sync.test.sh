@@ -523,6 +523,14 @@ test_spawn_fast_forwards_before_launch() {
 exit 0
 SH
   chmod +x "$fakebin/tmux"
+  cat > "$fakebin/codex" <<'SH'
+#!/usr/bin/env bash
+if [ "${1:-}" = --version ]; then
+  printf '%s\n' 'codex-cli 9.9.9'
+fi
+exit 0
+SH
+  chmod +x "$fakebin/codex"
 
   PATH="$fakebin:$BASE_PATH" TMUX='' \
     FM_ROOT_OVERRIDE="$w/main" FM_HOME="$w/home" \
@@ -557,6 +565,14 @@ test_spawn_warns_when_sync_skipped_before_launch() {
 exit 0
 SH
   chmod +x "$fakebin/tmux"
+  cat > "$fakebin/codex" <<'SH'
+#!/usr/bin/env bash
+if [ "${1:-}" = --version ]; then
+  printf '%s\n' 'codex-cli 9.9.9'
+fi
+exit 0
+SH
+  chmod +x "$fakebin/codex"
 
   PATH="$fakebin:$BASE_PATH" TMUX='' \
     FM_ROOT_OVERRIDE="$w/main" FM_HOME="$w/home" \

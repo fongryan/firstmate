@@ -38,9 +38,6 @@
 # Git-created homes are removed through Git's registered worktree API. Unknown
 # legacy paths are preserved instead of guessed or silently deleted.
 # Usage: fm-teardown.sh <task-id> [--force]
-# leased home releases its durable treehouse lease so the pool slot is freed,
-# never left leased forever. If the treehouse return fails, teardown leaves the
-# leased home and state in place instead of hiding a still-held lease.
 # Usage: fm-teardown.sh <task-id> [--force|--metadata-only]
 #   --force skips ordinary-task dirty and landed-work checks, skips scout report
 #   checks, and discards secondmate child work for kind=secondmate. Only use it
@@ -52,35 +49,10 @@
 #   unqueryable endpoints and secondmates. If Grok auth exists, it is revoked
 #   before its Firstmate token pointer is cleared.
 #
-# Transient / stale worktree git lock recovery (teardown-lock-race): a crew process
-# killed mid-git-operation can leave a .git/worktrees/<wt>/index.lock (or, for a
-# non-linked worktree, .git/index.lock) that makes `treehouse return --force` fail
-# with Unable to create '...index.lock': File exists. That lock is usually transient
-# (the dying process finishes or exits within seconds) and must never be force-deleted
-# while a live git process might still own it - the fix is patience, not rm.
-#
-# On that failure signature only, teardown_treehouse_return:
-#   1. Retries up to FM_TREEHOUSE_RETURN_LOCK_RETRIES times (default 3), waiting
-#      FM_TREEHOUSE_RETURN_LOCK_RETRY_WAIT_SECS (default 1s; falls back to the older
-#      FM_STALE_WORKTREE_LOCK_RETRY_WAIT_SECS name when the new one is unset) between
-#      attempts. Retries key off the error text, not whether the lock file still
-#      exists after the failed attempt - a lock that self-clears mid-check still
-#      deserves a retry of the return.
-#   2. Other treehouse return failures still abort immediately and loudly (no retry).
-#   3. If every retry still hits the lock signature and the lock remains, it is removed
-#      and the return tried once more ONLY when the lock is provably stale per
-#      bin/fm-lock-lib.sh's fm_lock_is_provably_stale, passing the worktree dir as the
-#      companion directory and FM_STALE_WORKTREE_LOCK_AGE_SECS (default 30s) as the age
-#      threshold. That shared proof owns the exact lsof-holder, mtime-age, and fail-safe
-#      rules.
-#   4. If retries exhaust and the lock is not provably stale, teardown fails as loudly
-#      as a normal return failure and notes that the lock persisted across the retry
-#      window. A missing `lsof`, or a lock that fails any stale check, is treated as
-#      NOT provably stale (fail safe): the lock is left untouched.
-# The same proof is used when non-force safety inspection cannot run because the lock
-# is present; teardown clears only a provably stale lock, then re-runs the safety
-# checks before any destructive return. Teardown output notes every wait, retry, and
-# removal so the operator can see what happened.
+# A linked worktree's index.lock is an ownership boundary. Teardown waits once
+# for a transient lock to clear, removes it only after the shared lock library
+# proves it stale, and otherwise preserves both the lock and worktree. This
+# preflight applies even to explicit --force teardown.
 set -eu
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -104,8 +76,6 @@ SUB_HOME_MARKER=".fm-secondmate-home"
 # Fail closed before any fleet mutation: a no-mistakes gate agent must never tear
 # down a worktree (see bin/fm-gate-refuse-lib.sh).
 fm_refuse_if_gate_agent
-# shellcheck source=bin/fm-lock-lib.sh
-. "$SCRIPT_DIR/fm-lock-lib.sh"
 FM_LOCK_LOG_PREFIX=teardown
 "$FM_ROOT/bin/fm-guard.sh" || true
 ID=$1
@@ -642,85 +612,40 @@ cleanup_stale_lock_for_safety_check() {
 
   echo "teardown: worktree safety check blocked by git lock $lock that is not provably stale (may belong to a live process); leaving it in place" >&2
   return "$TEARDOWN_WORKTREE_LOCK_REFUSED"
-  return "$TEARDOWN_TREEHOUSE_LOCK_REFUSED"
 }
 
-# Return a worktree/home via `treehouse return --force`, tolerating a transient or
-# stale git index.lock left by a killed crew process. See the script header.
-teardown_treehouse_return() {
-  local dir=$1 cd_dir=$2 label=$3 post_cleanup_check=${4:-}
-  local out lock attempt=0 max_retries lock_desc
+# Remove only a registered Git worktree, after honoring any live or unknown
+# index.lock. The force bit controls Git's dirty-worktree behavior; it never
+# bypasses lock ownership proof.
+safe_git_worktree_remove() {
+  local project=$1 target=$2 label=$3 force=${4:-0} lock
 
-  # Capture stdout+stderr so non-lock failures stay visible and lock failures can
-  # be matched by signature even when the lock file is already gone mid-check.
-  if out=$( ( cd "$cd_dir" && treehouse return --force "$dir" ) 2>&1 ); then
-    [ -n "$out" ] && printf '%s\n' "$out"
-    return 0
-  fi
-  [ -n "$out" ] && printf '%s\n' "$out" >&2
-
-  if ! treehouse_return_is_index_lock_error "$out"; then
+  fm_git_worktree_registered "$project" "$target" || {
+    echo "error: $label $target is not a registered Git worktree; preserving it" >&2
     return 1
-  fi
+  }
 
-  lock=$(worktree_git_lock_path "$dir") || lock=""
-  if [ -n "$lock" ]; then
-    lock_desc=$lock
-  else
-    lock_desc="index.lock"
-  fi
-
-  max_retries=$TREEHOUSE_RETURN_LOCK_RETRIES
-  case "$max_retries" in ''|*[!0-9]*) max_retries=3 ;; esac
-
-  while [ "$attempt" -lt "$max_retries" ]; do
-    attempt=$(( attempt + 1 ))
-    echo "teardown: $label return failed with transient git lock ($lock_desc); waiting ${TREEHOUSE_RETURN_LOCK_RETRY_WAIT_SECS}s and retrying ($attempt/${max_retries})" >&2
-    sleep "$TREEHOUSE_RETURN_LOCK_RETRY_WAIT_SECS"
-
-    if out=$( ( cd "$cd_dir" && treehouse return --force "$dir" ) 2>&1 ); then
-      [ -n "$out" ] && printf '%s\n' "$out"
-      echo "teardown: $label return succeeded on retry; lock cleared on its own" >&2
-      return 0
-    fi
-    [ -n "$out" ] && printf '%s\n' "$out" >&2
-
-    if ! treehouse_return_is_index_lock_error "$out"; then
-      echo "teardown: $label return failed with a non-lock error after retry; aborting" >&2
-      return 1
-    fi
-  done
-
-  # Refresh lock path after the patience window; it may have appeared, moved, or
-  # cleared while we waited.
-  lock=$(worktree_git_lock_path "$dir") || lock=""
+  lock=$(worktree_git_lock_path "$target") || {
+    echo "teardown: cannot resolve the git lock path for $label $target; preserving it" >&2
+    return 1
+  }
   if [ -n "$lock" ] && [ -e "$lock" ]; then
-    lock_desc=$lock
-    if fm_lock_is_provably_stale "$lock" "$dir" "$STALE_WORKTREE_LOCK_AGE_SECS"; then
-      rm -f "$lock"
-      echo "teardown: removed provably-stale git lock $lock (age >= ${STALE_WORKTREE_LOCK_AGE_SECS}s, no live holder) and retrying $label return" >&2
-      if [ -n "$post_cleanup_check" ]; then
-        if ! "$post_cleanup_check"; then
-          echo "teardown: $label return aborted after stale-lock cleanup because safety checks failed" >&2
-          return 1
-        fi
+    echo "teardown: $label blocked by git lock $lock; waiting ${WORKTREE_LOCK_RETRY_WAIT_SECS}s for the owner to finish" >&2
+    sleep "$WORKTREE_LOCK_RETRY_WAIT_SECS"
+    if [ -e "$lock" ]; then
+      if fm_lock_is_provably_stale "$lock" "$target" "$STALE_WORKTREE_LOCK_AGE_SECS"; then
+        rm -f "$lock"
+        echo "teardown: removed provably-stale git lock $lock (age >= ${STALE_WORKTREE_LOCK_AGE_SECS}s, no live holder)" >&2
+      else
+        echo "teardown: $label blocked by git lock $lock that is not provably stale (live or unknown owner); preserving it" >&2
+        return "$TEARDOWN_WORKTREE_LOCK_REFUSED"
       fi
-      if out=$( ( cd "$cd_dir" && treehouse return --force "$dir" ) 2>&1 ); then
-        [ -n "$out" ] && printf '%s\n' "$out"
-        echo "teardown: $label return succeeded after stale-lock cleanup" >&2
-        return 0
-      fi
-      [ -n "$out" ] && printf '%s\n' "$out" >&2
-      echo "teardown: $label return still failing after stale-lock cleanup" >&2
-      return 1
+    else
+      echo "teardown: $label git lock cleared on its own; continuing" >&2
     fi
-
-    echo "teardown: $label return failed: git lock $lock_desc persisted across ${max_retries} retries (waiting ${TREEHOUSE_RETURN_LOCK_RETRY_WAIT_SECS}s each) and is not provably stale (may belong to a live process); leaving it in place" >&2
-    return "$TEARDOWN_TREEHOUSE_LOCK_REFUSED"
   fi
 
-  echo "teardown: $label return failed: git index.lock signature persisted across ${max_retries} retries (waiting ${TREEHOUSE_RETURN_LOCK_RETRY_WAIT_SECS}s each) even after the lock file disappeared" >&2
-  return 1
+  fm_git_worktree_remove "$project" "$target" "$force"
 }
 
 validate_worktree_teardown_safety() {
@@ -976,6 +901,84 @@ EOF
   printf '%s\n' "$abs_home_path"
 }
 
+validate_firstmate_home_owned_changes() {
+  local home=$1 path manifest unsafe_path project_dir project_real project_status remote_contains
+  # A seeded home necessarily contains ignored/untracked operational state, so
+  # plain `git worktree remove` cannot retire even an idle secondmate. Refuse
+  # any tracked edits and any untracked path outside Firstmate-owned surfaces;
+  # only then may Git's force flag remove the validated disposable home.
+  git -C "$home" diff --quiet --ignore-submodules -- || {
+    echo "REFUSED: secondmate home $home contains tracked worktree changes; preserving it" >&2
+    return 1
+  }
+  git -C "$home" diff --cached --quiet --ignore-submodules -- || {
+    echo "REFUSED: secondmate home $home contains staged worktree changes; preserving it" >&2
+    return 1
+  }
+  if [ -d "$home/projects" ]; then
+    for project_dir in "$home/projects"/*; do
+      [ -e "$project_dir" ] || continue
+      [ -d "$project_dir" ] && [ ! -L "$project_dir" ] || {
+        echo "REFUSED: secondmate home $home contains an uninspectable project path $project_dir; preserving it" >&2
+        return 1
+      }
+      project_real=$(cd "$project_dir" 2>/dev/null && pwd -P) || {
+        echo "REFUSED: cannot resolve secondmate project $project_dir; preserving $home" >&2
+        return 1
+      }
+      case "$project_real" in
+        "$home"/projects/*) ;;
+        *)
+          echo "REFUSED: secondmate project $project_dir resolves outside $home/projects; preserving it" >&2
+          return 1
+          ;;
+      esac
+      git -C "$project_real" rev-parse --is-inside-work-tree >/dev/null 2>&1 || {
+        echo "REFUSED: secondmate project $project_real is not an inspectable Git worktree; preserving it" >&2
+        return 1
+      }
+      project_status=$(git -C "$project_real" status --porcelain 2>/dev/null) || {
+        echo "REFUSED: cannot inspect secondmate project $project_real for uncommitted work; preserving it" >&2
+        return 1
+      }
+      [ -z "$project_status" ] || {
+        echo "REFUSED: secondmate project $project_real contains uncommitted work; preserving it" >&2
+        return 1
+      }
+      remote_contains=$(git -C "$project_real" for-each-ref --format='%(refname)' --contains HEAD refs/remotes 2>/dev/null) || {
+        echo "REFUSED: cannot inspect remote reachability for secondmate project $project_real; preserving it" >&2
+        return 1
+      }
+      [ -n "$remote_contains" ] || {
+        echo "REFUSED: secondmate project $project_real has commits not proven reachable from a remote-tracking ref; preserving it" >&2
+        return 1
+      }
+    done
+  fi
+
+  manifest=$(mktemp "${TMPDIR:-/tmp}/fm-teardown-untracked.XXXXXX") || {
+    echo "REFUSED: cannot create an untracked-file inspection manifest for $home; preserving it" >&2
+    return 1
+  }
+  if ! git -C "$home" ls-files --others --exclude-standard -z > "$manifest"; then
+    rm -f "$manifest"
+    echo "REFUSED: cannot enumerate untracked files in secondmate home $home; preserving it" >&2
+    return 1
+  fi
+  unsafe_path=
+  while IFS= read -r -d '' path; do
+    case "$path" in
+      "$SUB_HOME_MARKER"|data/*|state/*|config/*|projects/*) ;;
+      *) unsafe_path=$path; break ;;
+    esac
+  done < "$manifest"
+  rm -f "$manifest"
+  if [ -n "$unsafe_path" ]; then
+    echo "REFUSED: secondmate home $home contains unowned path $unsafe_path; preserving it" >&2
+    return 1
+  fi
+}
+
 remove_firstmate_home() {
   local home=$1 label=$2 expected_id=${3:-} abs_home_path
   [ -n "$home" ] || return 0
@@ -983,13 +986,17 @@ remove_firstmate_home() {
   abs_home_path=$(validate_firstmate_home_for_removal "$home" "$label" "$expected_id") || return 1
   [ -n "$abs_home_path" ] || return 0
   if firstmate_home_has_git_worktree "$abs_home_path"; then
-    fm_git_worktree_remove "$FM_ROOT" "$abs_home_path" 1 || {
+    if [ "$FORCE" != --force ]; then
+      validate_firstmate_home_owned_changes "$abs_home_path" || return 1
+    fi
+    safe_git_worktree_remove "$FM_ROOT" "$abs_home_path" "$label" 1 || {
       echo "error: git worktree removal failed for $label $abs_home_path; preserving metadata" >&2
       return 1
     }
     return 0
   fi
-  safe_rm_rf "$abs_home_path" "$label"
+  echo "error: $label $abs_home_path is not a registered Git worktree; preserving it" >&2
+  return 1
 }
 
 validate_firstmate_home_children_removal() {
@@ -1071,7 +1078,7 @@ cleanup_firstmate_home_children() {
       validate_child_worktree_for_removal "$child_wt" "$child_proj" >/dev/null || return 1
       rm -f "$child_wt/.claude/settings.local.json" "$child_wt/.opencode/plugins/fm-turn-end.js" "$child_wt/.fm-grok-turnend"
       if [ -n "$child_proj" ] && [ -d "$child_proj" ] && worktree_registered_for_project "$child_proj" "$child_wt"; then
-        fm_git_worktree_remove "$child_proj" "$child_wt" 1 || return 1
+        safe_git_worktree_remove "$child_proj" "$child_wt" "child worktree" 1 || return 1
       else
         safe_rm_rf_child_worktree "$child_wt" "$child_proj"
       fi
@@ -1207,7 +1214,7 @@ elif [ -d "$WT" ] && [ "$KIND" != secondmate ]; then
   # Remove our hook file so a reused pool worktree cannot fire signals for a dead task.
   rm -f "$WT/.claude/settings.local.json" "$WT/.opencode/plugins/fm-turn-end.js" "$WT/.fm-grok-turnend"
   if worktree_registered_for_project "$PROJ" "$WT"; then
-    fm_git_worktree_remove "$PROJ" "$WT" 1 || {
+    safe_git_worktree_remove "$PROJ" "$WT" "worktree" "$( [ "$FORCE" = --force ] && printf 1 || printf 0 )" || {
       echo "error: git worktree removal failed for $WT; teardown aborted" >&2
       exit 1
     }

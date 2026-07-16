@@ -165,6 +165,7 @@ run_spawn() {
       "FM_ROOT_OVERRIDE=" "FM_HOME=$home" \
       "FM_STATE_OVERRIDE=$home/state" "FM_DATA_OVERRIDE=$home/data" \
       "FM_PROJECTS_OVERRIDE=$home/projects" "FM_CONFIG_OVERRIDE=$home/config" \
+      "FM_WORKTREE_ROOT=$(dirname "$pane")" \
       "FM_SPAWN_NO_GUARD=1" "FM_FAKE_PANE_PATH=$pane" "TMUX=fake,1,0" \
       "PATH=$fakebin:$PATH" "$@" \
       "$SPAWN" "$id" "$proj" codex ) 2>&1
@@ -175,8 +176,8 @@ test_spawn_refuses_and_admits() {
   home="$TMP/spawn-home"; mkdir -p "$home/data"
   proj=$(make_normal_repo "$TMP/spawn-proj")
   fakebin=$(make_spawn_fakebin "$TMP/spawn-fake")
-  wt="$TMP/spawn-wt"
-  git -C "$proj" worktree add -q --detach "$wt" >/dev/null 2>&1
+  wt="$TMP/spawn-worktrees/spawn-ok"
+  mkdir -p "$(dirname "$wt")"
 
   # env-marker refuse: neutral cwd, marker set.
   out=$(run_spawn "$NORMAL_CWD" "$home" spawn-envmark "$proj" "$wt" "$fakebin" NO_MISTAKES_GATE=1); rc=$?

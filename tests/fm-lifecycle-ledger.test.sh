@@ -37,14 +37,14 @@ test_heartbeat_is_monotonic_and_closeout_requires_evidence() {
 
   set +e
   FM_STATE_OVERRIDE="$STATE" FM_LIFECYCLE_NOW=1700000030 \
-    "$LIFECYCLE" closeout task-a completed --reason done >/dev/null 2>&1
+    "$LIFECYCLE" closeout task-a completed --reason 'done' >/dev/null 2>&1
   status=$?
   set -e
   [ "$status" -ne 0 ] || fail "closeout without evidence must fail"
 
   printf 'proof\n' > "$TMP_ROOT/proof.txt"
   FM_STATE_OVERRIDE="$STATE" FM_LIFECYCLE_NOW=1700000030 \
-    "$LIFECYCLE" closeout task-a completed --reason done --evidence "$TMP_ROOT/proof.txt" >/dev/null \
+    "$LIFECYCLE" closeout task-a completed --reason 'done' --evidence "$TMP_ROOT/proof.txt" >/dev/null \
     || fail "closeout with evidence failed"
   assert_grep 'state=completed' "$STATE/task-a.lifecycle" "closeout did not become terminal"
   pass "heartbeat and evidence-gated closeout work"
@@ -55,8 +55,8 @@ test_concurrent_heartbeats_do_not_corrupt_state() {
     "$LIFECYCLE" register concurrent --state active --repo app --owner crew-c \
     --branch concurrent --worktree "$TMP_ROOT/concurrent" --objective concurrent >/dev/null \
     || fail "concurrent task registration failed"
-  local i
-  for i in $(seq 1 8); do
+  local _
+  for _ in $(seq 1 8); do
     FM_STATE_OVERRIDE="$STATE" FM_LIFECYCLE_NOW=1700000050 \
       "$LIFECYCLE" heartbeat concurrent --owner crew-c >/dev/null &
   done

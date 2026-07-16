@@ -59,7 +59,7 @@ append_event() {
 }
 
 register_task() {
-  local id=$1 repo= owner= branch= worktree= objective= desired=queued now seq=1
+  local id=$1 repo='' owner='' branch='' worktree='' objective='' desired=queued now seq=1
   shift
   while [ "$#" -gt 0 ]; do
     case "$1" in
@@ -118,7 +118,7 @@ EOF
 }
 
 transition_task() {
-  local id=$1 to=$2 reason= evidence= now from seq
+  local id=$1 to=$2 reason='' evidence='' now from seq
   shift 2
   while [ "$#" -gt 0 ]; do
     case "$1" in
@@ -158,7 +158,7 @@ transition_task() {
 }
 
 heartbeat_task() {
-  local id=$1 owner= now previous seq
+  local id=$1 owner='' now previous seq
   shift
   while [ "$#" -gt 0 ]; do
     case "$1" in
@@ -184,7 +184,7 @@ heartbeat_task() {
 }
 
 closeout_task() {
-  local id=$1 to=$2 reason= evidence=
+  local id=$1 to=$2 reason='' evidence=''
   shift 2
   while [ "$#" -gt 0 ]; do
     case "$1" in

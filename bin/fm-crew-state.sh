@@ -571,7 +571,6 @@ if [ -n "$LOG_VERB" ]; then
   if [ "$LOG_STATE" != unknown ]; then
     emit "$LOG_STATE" status-log "$(status_line_note "$LOG_LINE")"
   fi
-  emit "$(map_log_state "$LOG_LINE")" status-log "$(status_line_note "$LOG_LINE")"
 fi
 
 emit unknown none "no current-state source available"
