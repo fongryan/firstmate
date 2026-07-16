@@ -13,6 +13,9 @@
 #                                        config/secondmate-harness, or empty when absent.
 #        fm-harness.sh secondmate-effort   print the optional EFFORT token from
 #                                        config/secondmate-harness, or empty when absent.
+#        fm-harness.sh codex-cli           print a verified Codex-compatible CLI
+#                                        path, rejecting the unrelated legacy
+#                                        npm `codex` package that may shadow PATH.
 # config/secondmate-harness format: a single line "<harness> [<model>] [<effort>]",
 # whitespace-separated. A bare "<harness>" (today's format) behaves exactly as before:
 # harness only, no model/effort. Only the first non-empty, non-comment line is parsed.
@@ -136,10 +139,59 @@ resolve_secondmate_effort() {
   secondmate_field 3
 }
 
+canonical_executable_path() {
+  local candidate=$1 dir base
+  [ -n "$candidate" ] || return 1
+  dir=$(dirname "$candidate")
+  base=$(basename "$candidate")
+  dir=$(cd "$dir" 2>/dev/null && pwd -P) || return 1
+  candidate="$dir/$base"
+  [ -x "$candidate" ] || return 1
+  printf '%s\n' "$candidate"
+}
+
+codex_cli_is_compatible() {
+  local candidate=$1 version
+  [ -n "$candidate" ] && [ -x "$candidate" ] || return 1
+  version=$("$candidate" --version 2>/dev/null | sed -n '1p') || return 1
+  printf '%s\n' "$version" | grep -Eq '^codex-cli [0-9]+\.[0-9]+\.[0-9]+([+-][0-9A-Za-z.-]+)?$'
+}
+
+resolve_codex_cli() {
+  local candidate canonical path_candidate fallbacks
+  local -a fallback_candidates
+  if [ -n "${FM_CODEX_CLI:-}" ]; then
+    canonical=$(canonical_executable_path "$FM_CODEX_CLI" 2>/dev/null || true)
+    if [ -n "$canonical" ] && codex_cli_is_compatible "$canonical"; then
+      printf '%s\n' "$canonical"
+      return 0
+    fi
+    echo "error: FM_CODEX_CLI=$FM_CODEX_CLI is not an executable Codex-compatible CLI (expected strict 'codex-cli <semver>')." >&2
+    return 1
+  fi
+
+  path_candidate=$(command -v codex 2>/dev/null || true)
+  fallbacks=${FM_CODEX_CLI_FALLBACKS:-/Applications/ChatGPT.app/Contents/Resources/codex:$HOME/Applications/ChatGPT.app/Contents/Resources/codex}
+  IFS=: read -r -a fallback_candidates <<< "$fallbacks"
+  for candidate in "$path_candidate" "${fallback_candidates[@]}"; do
+    [ -n "$candidate" ] || continue
+    canonical=$(canonical_executable_path "$candidate" 2>/dev/null || true)
+    if [ -n "$canonical" ] && codex_cli_is_compatible "$canonical"; then
+      printf '%s\n' "$canonical"
+      return 0
+    fi
+  done
+
+  echo "error: no verified Codex-compatible CLI found; PATH may be shadowed by the unrelated legacy npm 'codex' package." >&2
+  echo "Install @openai/codex, use the ChatGPT app bundle, set FM_CODEX_CLI, or configure FM_CODEX_CLI_FALLBACKS." >&2
+  return 1
+}
+
 case "${1:-}" in
   crew) resolve_crew ;;
   secondmate) resolve_secondmate ;;
   secondmate-model) resolve_secondmate_model ;;
   secondmate-effort) resolve_secondmate_effort ;;
+  codex-cli) resolve_codex_cli ;;
   *) detect_own ;;
 esac

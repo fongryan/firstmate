@@ -469,6 +469,7 @@ heartbeat_scan_finds_actionable() {
   return 1
 }
 
+<<<<<<< HEAD
 # Lifecycle status reconciliation happens before heartbeat decisions. A blocked
 # or review-gated task is not an orphan merely because it is not generating
 # tokens; it must leave active state before the stale reaper can classify it.
@@ -525,6 +526,8 @@ lifecycle_reap_due() {
   fm_wake_append signal lifecycle "lifecycle: $out" || true
 }
 
+=======
+>>>>>>> origin/main
 # event_wait_or_sleep: the terminal wait of each supervision cycle. For a home
 # with push-capable windows (herdr), it replaces the blind `sleep POLL` with a
 # bounded wait on the backend's native transition stream, so a crew going

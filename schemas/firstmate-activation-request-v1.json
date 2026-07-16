@@ -1,0 +1,47 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "firstmate-activation-request@1",
+  "title": "Firstmate activation request v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schemaVersion", "activationId", "repository", "objective",
+    "expectedNetValue", "ownerSurface", "proofGate", "stopRule", "rollback",
+    "budget", "expiresAt", "sourceEvidenceRefs", "requestedTrustStage",
+    "policyHash", "requestHash"
+  ],
+  "properties": {
+    "schemaVersion": {"const": "firstmate-activation-request@1"},
+    "activationId": {"type": "string", "pattern": "^[a-z0-9][a-z0-9-]{2,79}$"},
+    "repository": {"type": "string", "pattern": "^[A-Za-z0-9._-]{1,100}$"},
+    "objective": {"type": "string", "minLength": 1, "maxLength": 500, "pattern": "^[^\\u0000-\\u001F\\u007F]*$"},
+    "expectedNetValue": {
+      "type": "object", "additionalProperties": false,
+      "required": ["amountUsd", "components", "confidence"],
+      "properties": {
+        "amountUsd": {"type": "number", "minimum": -1000000000, "maximum": 1000000000},
+        "components": {"type": "array", "maxItems": 20, "items": {"type": "string", "minLength": 1, "maxLength": 100, "pattern": "^[^\\u0000-\\u001F\\u007F]*$"}},
+        "confidence": {"type": "number", "minimum": 0, "maximum": 1}
+      }
+    },
+    "ownerSurface": {"type": "string", "minLength": 1, "maxLength": 300, "pattern": "^[^\\u0000-\\u001F\\u007F]*$"},
+    "proofGate": {"type": "string", "minLength": 1, "maxLength": 500, "pattern": "^[^\\u0000-\\u001F\\u007F]*$"},
+    "stopRule": {"type": "string", "minLength": 1, "maxLength": 500, "pattern": "^[^\\u0000-\\u001F\\u007F]*$"},
+    "rollback": {"type": "string", "minLength": 1, "maxLength": 500, "pattern": "^[^\\u0000-\\u001F\\u007F]*$"},
+    "budget": {
+      "type": "object", "additionalProperties": false,
+      "required": ["maxUsd", "maxMinutes", "maxFiles", "maxConcurrency"],
+      "properties": {
+        "maxUsd": {"type": "number", "minimum": 0, "maximum": 1000000},
+        "maxMinutes": {"type": "integer", "minimum": 1, "maximum": 10080},
+        "maxFiles": {"type": "integer", "minimum": 1, "maximum": 1000},
+        "maxConcurrency": {"type": "integer", "minimum": 1, "maximum": 32}
+      }
+    },
+    "expiresAt": {"type": "string", "format": "date-time"},
+    "sourceEvidenceRefs": {"type": "array", "maxItems": 100, "items": {"type": "string", "maxLength": 300, "pattern": "^(?![A-Za-z][A-Za-z0-9+.-]*://)[A-Za-z0-9._:/@+-]+$"}},
+    "requestedTrustStage": {"type": "string", "minLength": 1, "maxLength": 50, "pattern": "^[^\\u0000-\\u001F\\u007F]*$"},
+    "policyHash": {"type": "string", "minLength": 1, "maxLength": 200, "pattern": "^[^\\u0000-\\u001F\\u007F]*$"},
+    "requestHash": {"type": "string", "pattern": "^sha256:[a-f0-9]{64}$"}
+  }
+}

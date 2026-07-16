@@ -331,7 +331,7 @@ fi
 # The verified launch command per adapter. The knowledge half of each adapter
 # (busy signature, exit command, dialogs, quirks) lives in the harness-adapters skill.
 launch_template() {
-  local harness=$1 kind=${2:-ship}
+  local harness=$1 kind=${2:-ship} codex_cli quoted_codex_cli
   # shellcheck disable=SC2016  # single quotes are deliberate: $(cat ...) expands in the crewmate pane, not here
   case "$harness" in
     # CLAUDE_CODE_ENABLE_PROMPT_SUGGESTION=false disables claude's interactive
@@ -345,10 +345,13 @@ launch_template() {
     # the defense-in-depth backstop for any pane this flag cannot reach.
     claude) printf '%s' 'CLAUDE_CODE_ENABLE_PROMPT_SUGGESTION=false claude --dangerously-skip-permissions __MODELFLAG____EFFORTFLAG__"$(cat __BRIEF__)"' ;;
     codex)
+      codex_cli=$("$FM_ROOT/bin/fm-harness.sh" codex-cli) || return 1
+      # Single-quote the verified absolute/command path for the target shell.
+      quoted_codex_cli="'$(printf '%s' "$codex_cli" | sed "s/'/'\\\\''/g")'"
       if [ "$kind" = secondmate ]; then
-        printf '%s' 'codex __MODELFLAG____EFFORTFLAG__--dangerously-bypass-approvals-and-sandbox "$(cat __BRIEF__)"'
+        printf '%s' "$quoted_codex_cli __MODELFLAG____EFFORTFLAG__--dangerously-bypass-approvals-and-sandbox \"\$(cat __BRIEF__)\""
       else
-        printf '%s' 'codex __MODELFLAG____EFFORTFLAG__--dangerously-bypass-approvals-and-sandbox -c "notify=[\"bash\",\"-c\",\"touch __TURNEND__\"]" "$(cat __BRIEF__)"'
+        printf '%s' "$quoted_codex_cli __MODELFLAG____EFFORTFLAG__--dangerously-bypass-approvals-and-sandbox -c \"notify=[\\\"bash\\\",\\\"-c\\\",\\\"touch __TURNEND__\\\"]\" \"\$(cat __BRIEF__)\""
       fi
       ;;
     opencode) printf '%s' 'OPENCODE_CONFIG_CONTENT='\''{"permission":{"*":"allow"}}'\'' opencode __MODELFLAG__--prompt "$(cat __BRIEF__)"' ;;
@@ -482,6 +485,16 @@ shell_quote() {
   printf "'"
   printf '%s' "$1" | sed "s/'/'\\\\''/g"
   printf "'"
+}
+
+autopilot_process_identity() {  # <pid>: stable for this process generation
+  local pid=$1 identity
+  case "$pid" in ''|*[!0-9]*) return 1 ;; esac
+  [ "$pid" -gt 1 ] || return 1
+  identity=$(LC_ALL=C ps -o lstart= -p "$pid" 2>/dev/null) || return 1
+  identity=$(printf '%s' "$identity" | tr -s '[:space:]' ' ' | sed 's/^ //; s/ $//')
+  [ -n "$identity" ] || return 1
+  printf '%s\n' "$identity"
 }
 
 model_flag_for_harness() {
@@ -1119,6 +1132,16 @@ if [ "$KIND" = secondmate ]; then
   sq_home=$(shell_quote "$PROJ_ABS")
   LAUNCH="FM_ROOT_OVERRIDE= FM_STATE_OVERRIDE= FM_DATA_OVERRIDE= FM_PROJECTS_OVERRIDE= FM_CONFIG_OVERRIDE= FM_HOME=$sq_home $LAUNCH"
 fi
+# Preserve the Bash autopilot's lock-owner generation across a dispatched
+# harness startup. Invalid, dead, or PID-1 owners are deliberately not
+# propagated; fm-lock.sh will then use ordinary acquisition and stale recovery.
+if autopilot_owner_identity=$(autopilot_process_identity "${FM_AUTOPILOT_LOCK_OWNER_PID:-}"); then
+  sq_autopilot_owner=$(shell_quote "$FM_AUTOPILOT_LOCK_OWNER_PID")
+  sq_autopilot_owner_identity=$(shell_quote "$autopilot_owner_identity")
+  spawn_send_text_line "$T" "export FM_AUTOPILOT_LOCK_OWNER_PID=$sq_autopilot_owner"
+  spawn_send_text_line "$T" "export FM_AUTOPILOT_LOCK_OWNER_IDENTITY=$sq_autopilot_owner_identity"
+fi
+
 # Export GOTMPDIR into the crewmate's pane shell so the agent and every child
 # process (go build, go test, ...) inherit it. Sent before the launch command so
 # the env is set when the agent starts; the brief sleep lets the export land.

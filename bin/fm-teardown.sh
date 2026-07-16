@@ -38,10 +38,51 @@
 # Git-created homes are removed through Git's registered worktree API. Unknown
 # legacy paths are preserved instead of guessed or silently deleted.
 # Usage: fm-teardown.sh <task-id> [--force]
+# leased home releases its durable treehouse lease so the pool slot is freed,
+# never left leased forever. If the treehouse return fails, teardown leaves the
+# leased home and state in place instead of hiding a still-held lease.
+# Usage: fm-teardown.sh <task-id> [--force|--metadata-only]
 #   --force skips ordinary-task dirty and landed-work checks, skips scout report
 #   checks, and discards secondmate child work for kind=secondmate. Only use it
 #   when the captain has explicitly said to discard the work.
+#   --metadata-only reconciles a dead, terminal stale record without touching its
+#   worktree, branch, refs, worktree hooks, runtime processes, or task temp
+#   directory. It accepts a ship record only with a final explicit superseded:
+#   event, or a scout record with its report present; it refuses live or
+#   unqueryable endpoints and secondmates. If Grok auth exists, it is revoked
+#   before its Firstmate token pointer is cleared.
 #
+=======
+# Transient / stale worktree git lock recovery (teardown-lock-race): a crew process
+# killed mid-git-operation can leave a .git/worktrees/<wt>/index.lock (or, for a
+# non-linked worktree, .git/index.lock) that makes `treehouse return --force` fail
+# with Unable to create '...index.lock': File exists. That lock is usually transient
+# (the dying process finishes or exits within seconds) and must never be force-deleted
+# while a live git process might still own it - the fix is patience, not rm.
+#
+# On that failure signature only, teardown_treehouse_return:
+#   1. Retries up to FM_TREEHOUSE_RETURN_LOCK_RETRIES times (default 3), waiting
+#      FM_TREEHOUSE_RETURN_LOCK_RETRY_WAIT_SECS (default 1s; falls back to the older
+#      FM_STALE_WORKTREE_LOCK_RETRY_WAIT_SECS name when the new one is unset) between
+#      attempts. Retries key off the error text, not whether the lock file still
+#      exists after the failed attempt - a lock that self-clears mid-check still
+#      deserves a retry of the return.
+#   2. Other treehouse return failures still abort immediately and loudly (no retry).
+#   3. If every retry still hits the lock signature and the lock remains, it is removed
+#      and the return tried once more ONLY when the lock is provably stale per
+#      bin/fm-lock-lib.sh's fm_lock_is_provably_stale, passing the worktree dir as the
+#      companion directory and FM_STALE_WORKTREE_LOCK_AGE_SECS (default 30s) as the age
+#      threshold. That shared proof owns the exact lsof-holder, mtime-age, and fail-safe
+#      rules.
+#   4. If retries exhaust and the lock is not provably stale, teardown fails as loudly
+#      as a normal return failure and notes that the lock persisted across the retry
+#      window. A missing `lsof`, or a lock that fails any stale check, is treated as
+#      NOT provably stale (fail safe): the lock is left untouched.
+# The same proof is used when non-force safety inspection cannot run because the lock
+# is present; teardown clears only a provably stale lock, then re-runs the safety
+# checks before any destructive return. Teardown output notes every wait, retry, and
+# removal so the operator can see what happened.
+>>>>>>> origin/main
 set -eu
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -56,6 +97,7 @@ SUB_HOME_MARKER=".fm-secondmate-home"
 . "$SCRIPT_DIR/fm-tasks-axi-lib.sh"
 # shellcheck source=bin/fm-backend.sh
 . "$SCRIPT_DIR/fm-backend.sh"
+<<<<<<< HEAD
 # shellcheck source=bin/fm-git-worktree.sh
 . "$SCRIPT_DIR/fm-git-worktree.sh"
 # shellcheck source=bin/fm-lock-lib.sh
@@ -65,10 +107,23 @@ SUB_HOME_MARKER=".fm-secondmate-home"
 # Fail closed before any fleet mutation: a no-mistakes gate agent must never tear
 # down a worktree (see bin/fm-gate-refuse-lib.sh).
 fm_refuse_if_gate_agent
+# shellcheck source=bin/fm-lock-lib.sh
+. "$SCRIPT_DIR/fm-lock-lib.sh"
 FM_LOCK_LOG_PREFIX=teardown
 "$FM_ROOT/bin/fm-guard.sh" || true
 ID=$1
-FORCE=${2:-}
+ACTION=${2:-}
+FORCE=
+METADATA_ONLY=0
+case "$ACTION" in
+  '') ;;
+  --force) FORCE=--force ;;
+  --metadata-only) METADATA_ONLY=1 ;;
+  *)
+    echo "error: unknown teardown option $ACTION; expected --force or --metadata-only" >&2
+    exit 2
+    ;;
+esac
 
 META="$STATE/$ID.meta"
 [ -f "$META" ] || { echo "error: no meta for task $ID at $META" >&2; exit 1; }
@@ -310,6 +365,157 @@ backlog_refresh_reminder() {
   fi
 }
 
+metadata_only_has_terminal_evidence() {
+  local report last_event
+  case "$KIND" in
+    scout)
+      report="$DATA/$ID/report.md"
+      [ -f "$report" ]
+      ;;
+    secondmate)
+      return 1
+      ;;
+    *)
+      last_event=$(sed -n '/[^[:space:]]/p' "$STATE/$ID.status" 2>/dev/null | tail -1 || true)
+      case "$last_event" in
+        superseded:*) return 0 ;;
+      esac
+      return 1
+      ;;
+  esac
+}
+
+# Metadata-only reconciliation needs a stronger answer than the shared
+# presence probe's boolean. Limit the first release to tmux, where we can prove
+# one of three states without starting a server:
+#   alive   exact target resolves;
+#   dead    the server was queried successfully and the target did not resolve,
+#           or tmux confirms that no server exists at all;
+#   unknown missing CLI, malformed target, permission/socket/query failure, or
+#           any backend whose tri-state behavior has not been verified.
+metadata_only_endpoint_state() {
+  local out rc line matches=0 window_name
+  [ -n "$T" ] || { printf 'unknown'; return 0; }
+  [ "$BACKEND" = tmux ] || { printf 'unknown'; return 0; }
+  command -v tmux >/dev/null 2>&1 || { printf 'unknown'; return 0; }
+
+  set +e
+  out=$(tmux list-windows -a -F '#{session_name}:#{window_name}' 2>&1)
+  rc=$?
+  set -e
+  if [ "$rc" -eq 0 ]; then
+    case "$T" in
+      *:*)
+        if printf '%s\n' "$out" | grep -qxF "$T"; then
+          printf 'alive'
+        else
+          printf 'dead'
+        fi
+        ;;
+      @*|%*)
+        # Stable ids need a different exact inventory format; unsupported here
+        # until a task records one and the behavior is covered empirically.
+        printf 'unknown'
+        ;;
+      *)
+        while IFS= read -r line; do
+          [ -n "$line" ] || continue
+          window_name=${line#*:}
+          [ "$window_name" = "$T" ] && matches=$(( matches + 1 ))
+        done <<EOF
+$out
+EOF
+        case "$matches" in
+          0) printf 'dead' ;;
+          1) printf 'alive' ;;
+          *) printf 'unknown' ;;
+        esac
+        ;;
+    esac
+    return 0
+  fi
+  case "$out" in
+    *"no server running on "*) printf 'dead' ;;
+    *"error connecting to "*"(No such file or directory)"*) printf 'dead' ;;
+    *) printf 'unknown' ;;
+  esac
+}
+
+revoke_metadata_only_grok_auth() {
+  local token_path token auth_path
+  token_path="$STATE/$ID.grok-turnend-token"
+  [ -f "$token_path" ] || return 0
+  if ! token=$(cat "$token_path" 2>/dev/null); then
+    echo "REFUSED: metadata-only teardown cannot read the Grok auth token pointer for $ID; preserving state for manual revocation." >&2
+    return 1
+  fi
+  case "$token" in
+    '')
+      echo "REFUSED: metadata-only teardown found an empty Grok auth token pointer for $ID; preserving state for manual revocation." >&2
+      return 1
+      ;;
+    *[!A-Za-z0-9._-]*)
+      echo "REFUSED: metadata-only teardown found an invalid Grok auth token pointer for $ID; preserving state for manual revocation." >&2
+      return 1
+      ;;
+  esac
+  remove_grok_turnend_auth "$STATE" "$ID" || return 1
+  auth_path="${GROK_HOME:-$HOME/.grok}/hooks/fm-turn-end.d/$token"
+  if [ -e "$auth_path" ]; then
+    echo "REFUSED: metadata-only teardown could not revoke Grok auth at $auth_path; preserving Firstmate state." >&2
+    return 1
+  fi
+}
+
+metadata_only_teardown() {
+  local endpoint_state
+  if [ "$KIND" = secondmate ]; then
+    echo "REFUSED: metadata-only teardown cannot retire persistent secondmate $ID." >&2
+    echo "Use the explicit secondmate retirement contract after inspecting its child home." >&2
+    return 1
+  fi
+
+  endpoint_state=$(metadata_only_endpoint_state)
+  if [ "$endpoint_state" = alive ]; then
+    echo "REFUSED: metadata-only teardown requires a dead endpoint; $BACKEND target $T still exists." >&2
+    echo "Stop or reconcile the live owner before clearing Firstmate state." >&2
+    return 1
+  fi
+  if [ "$endpoint_state" != dead ]; then
+    echo "REFUSED: metadata-only teardown could not confirm the endpoint is dead; $BACKEND target ${T:-<missing>} is unqueryable or unsupported." >&2
+    echo "Restore a verified backend probe or use the ordinary lifecycle path; Firstmate state remains intact." >&2
+    return 1
+  fi
+
+  if ! metadata_only_has_terminal_evidence; then
+    if [ "$KIND" = scout ]; then
+      echo "REFUSED: metadata-only scout teardown requires its report at $DATA/$ID/report.md." >&2
+    else
+      echo "REFUSED: metadata-only teardown requires an explicit terminal superseded: event in $STATE/$ID.status for ship tasks." >&2
+    fi
+    echo "The worktree is preserved and the stale record remains intact." >&2
+    return 1
+  fi
+
+  # Revoke global Grok auth before destroying its cleanup provenance. The
+  # worktree pointer is deliberately preserved and becomes inert after revoke.
+  revoke_metadata_only_grok_auth || return 1
+
+  # Deliberately state-only apart from the auth revocation above. Do not kill a
+  # backend target, inspect or alter the worktree, detach/delete a branch,
+  # remove worktree hooks, return a pool slot, delete tasktmp, fetch/sync a
+  # project clone, or touch any other external harness state.
+  rm -f "$STATE/$ID.status" "$STATE/$ID.turn-ended" "$STATE/$ID.check.sh" \
+    "$STATE/$ID.meta" "$STATE/$ID.pi-ext.ts" "$STATE/$ID.grok-turnend-token"
+  echo "metadata-only teardown $ID complete; preserved worktree ${WT:-<missing>}"
+  backlog_refresh_reminder
+}
+
+if [ "$METADATA_ONLY" = 1 ]; then
+  metadata_only_teardown
+  exit $?
+fi
+
 registry_home_for_line() {
   sed -n 's/^[^(]*(home: \([^;)]*\);.*/\1/p'
 }
@@ -439,6 +645,85 @@ cleanup_stale_lock_for_safety_check() {
 
   echo "teardown: worktree safety check blocked by git lock $lock that is not provably stale (may belong to a live process); leaving it in place" >&2
   return "$TEARDOWN_WORKTREE_LOCK_REFUSED"
+  return "$TEARDOWN_TREEHOUSE_LOCK_REFUSED"
+}
+
+# Return a worktree/home via `treehouse return --force`, tolerating a transient or
+# stale git index.lock left by a killed crew process. See the script header.
+teardown_treehouse_return() {
+  local dir=$1 cd_dir=$2 label=$3 post_cleanup_check=${4:-}
+  local out lock attempt=0 max_retries lock_desc
+
+  # Capture stdout+stderr so non-lock failures stay visible and lock failures can
+  # be matched by signature even when the lock file is already gone mid-check.
+  if out=$( ( cd "$cd_dir" && treehouse return --force "$dir" ) 2>&1 ); then
+    [ -n "$out" ] && printf '%s\n' "$out"
+    return 0
+  fi
+  [ -n "$out" ] && printf '%s\n' "$out" >&2
+
+  if ! treehouse_return_is_index_lock_error "$out"; then
+    return 1
+  fi
+
+  lock=$(worktree_git_lock_path "$dir") || lock=""
+  if [ -n "$lock" ]; then
+    lock_desc=$lock
+  else
+    lock_desc="index.lock"
+  fi
+
+  max_retries=$TREEHOUSE_RETURN_LOCK_RETRIES
+  case "$max_retries" in ''|*[!0-9]*) max_retries=3 ;; esac
+
+  while [ "$attempt" -lt "$max_retries" ]; do
+    attempt=$(( attempt + 1 ))
+    echo "teardown: $label return failed with transient git lock ($lock_desc); waiting ${TREEHOUSE_RETURN_LOCK_RETRY_WAIT_SECS}s and retrying ($attempt/${max_retries})" >&2
+    sleep "$TREEHOUSE_RETURN_LOCK_RETRY_WAIT_SECS"
+
+    if out=$( ( cd "$cd_dir" && treehouse return --force "$dir" ) 2>&1 ); then
+      [ -n "$out" ] && printf '%s\n' "$out"
+      echo "teardown: $label return succeeded on retry; lock cleared on its own" >&2
+      return 0
+    fi
+    [ -n "$out" ] && printf '%s\n' "$out" >&2
+
+    if ! treehouse_return_is_index_lock_error "$out"; then
+      echo "teardown: $label return failed with a non-lock error after retry; aborting" >&2
+      return 1
+    fi
+  done
+
+  # Refresh lock path after the patience window; it may have appeared, moved, or
+  # cleared while we waited.
+  lock=$(worktree_git_lock_path "$dir") || lock=""
+  if [ -n "$lock" ] && [ -e "$lock" ]; then
+    lock_desc=$lock
+    if fm_lock_is_provably_stale "$lock" "$dir" "$STALE_WORKTREE_LOCK_AGE_SECS"; then
+      rm -f "$lock"
+      echo "teardown: removed provably-stale git lock $lock (age >= ${STALE_WORKTREE_LOCK_AGE_SECS}s, no live holder) and retrying $label return" >&2
+      if [ -n "$post_cleanup_check" ]; then
+        if ! "$post_cleanup_check"; then
+          echo "teardown: $label return aborted after stale-lock cleanup because safety checks failed" >&2
+          return 1
+        fi
+      fi
+      if out=$( ( cd "$cd_dir" && treehouse return --force "$dir" ) 2>&1 ); then
+        [ -n "$out" ] && printf '%s\n' "$out"
+        echo "teardown: $label return succeeded after stale-lock cleanup" >&2
+        return 0
+      fi
+      [ -n "$out" ] && printf '%s\n' "$out" >&2
+      echo "teardown: $label return still failing after stale-lock cleanup" >&2
+      return 1
+    fi
+
+    echo "teardown: $label return failed: git lock $lock_desc persisted across ${max_retries} retries (waiting ${TREEHOUSE_RETURN_LOCK_RETRY_WAIT_SECS}s each) and is not provably stale (may belong to a live process); leaving it in place" >&2
+    return "$TEARDOWN_TREEHOUSE_LOCK_REFUSED"
+  fi
+
+  echo "teardown: $label return failed: git index.lock signature persisted across ${max_retries} retries (waiting ${TREEHOUSE_RETURN_LOCK_RETRY_WAIT_SECS}s each) even after the lock file disappeared" >&2
+  return 1
 }
 
 validate_worktree_teardown_safety() {

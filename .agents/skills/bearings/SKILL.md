@@ -25,7 +25,7 @@ It never tears down a task, merges a PR, dispatches new work, or mutates any tas
    If the command is unavailable, fall back to `bin/fm-fleet-snapshot.sh --json` and `bin/fm-crew-state.sh <id>`; never infer current state from a raw `tail` of `state/<id>.status`, which is append-only wake-event history whose last line goes stale.
    A queued item under `gates` only becomes "next work" when its blocker is gone and its time/date gate has arrived; until then it stays queued with the reason.
 
-2. **Compose the detailed report file around the four-section spine, adding the richer detail the chat leaves out.**
+2. **Compose the report with these sections, matching the worked example's structure, tone, and level of detail.**
    The gather step is deterministic; your judgment is scoped to the last mile only - ranking the command's facts by what matters right now and writing the scannable prose.
    The exemplar is `data/status-report-2026-07-06.md` in this home's `data/` when present; match its scannability, not a raw state dump.
    The report uses the same four sections as the chat (see the chat-response contract below), in the same order, each always present, and adds the detail the chat omits:

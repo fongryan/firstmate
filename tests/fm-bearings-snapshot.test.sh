@@ -127,6 +127,7 @@ EOF
 ## Done
 - [x] mate-landed - Secondmate-managed fix https://github.com/kunchenguid/firstmate/pull/50 (repo: firstmate) (kind: ship) (merged 2026-07-11)
 EOF
+>>>>>>> origin/main
 }
 
 run() {  # <home> <fakebin> <args...>
@@ -416,6 +417,7 @@ test_completed_scout_report_not_pending() {
   pass "a completed scout with decision-like report prose is a pointer, not pending"
 }
 
+<<<<<<< HEAD
 # Recently Landed must include merges a secondmate managed. Those completion records
 # live in the secondmate home's OWN backlog, not the main one, so the projection must
 # roll them up. Local, deterministic, no GitHub call.
@@ -524,6 +526,9 @@ test_landed_includes_secondmate_home_merges
 test_landed_bounded_and_disclosed
 test_captains_call_anti_leak
 test_chat_contract_four_sections
+=======
+test_default_is_bounded_and_local_only
+test_toon_json_parity
 test_completed_scout_report_not_pending
 test_open_decision_surfaces_end_to_end
 test_report_pointers_surface

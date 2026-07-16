@@ -21,6 +21,7 @@ Prerequisites:
 - `herdr` itself, protocol 14 or newer (0.7.1 and 0.7.3 verified) - see [herdr.dev](https://herdr.dev) for install instructions.
 - `jq`, required to parse herdr's JSON output: `brew install jq` (or your platform's package manager).
 - The universal firstmate prerequisites - a verified crew harness plus the required toolchain, owned by [`docs/configuration.md`](configuration.md) ("Harness support", "Toolchain"); Firstmate creates the task's Git worktree directly, while herdr provides the session.
+- The universal firstmate prerequisites - a verified crew harness plus the required toolchain, owned by [`docs/configuration.md`](configuration.md) ("Harness support", "Toolchain"); treehouse still provides the worktree, herdr only provides the session.
 
 Select herdr by putting `herdr` in a local `config/backend` file - the durable way to pick it - or by exporting `FM_BACKEND=herdr` when you launch your harness for a one-off session; telling the first mate in chat to use herdr also works.
 It can also be auto-detected: when firstmate itself is running natively inside herdr (`HERDR_ENV=1`) and no explicit backend is set, firstmate auto-selects herdr and prints a one-time opt-out notice; running inside tmux nested in herdr always resolves to tmux instead.
@@ -795,6 +796,10 @@ Covered by the unit cases in `tests/fm-afk-launch.test.sh` (clear-on-fresh-entry
 
 ## Known gaps and follow-up notes
 
+## Known gaps and follow-up notes
+
+- **Backend-specific bootstrap detection is absent.** `bin/fm-bootstrap.sh` still requires `tmux` outside Orca mode, and does not yet conditionally add `herdr` and `jq` when a backend selection resolves to herdr.
+  The version/tool gate happens at spawn time instead and refuses loudly, so this is bootstrap-detection polish, not a functional gap.
 - **RESOLVED: worktree-discovery isolation guard's symlinked-project-prefix false refusal.** Originally discovered while building the runtime-backend-auto-detection real smoke test (`tests/fm-backend-autodetect-smoke.test.sh`), which needed a scratch project.
   `fm-spawn.sh`'s `PROJ_ABS` was a LOGICAL `cd && pwd` (symlink components kept), while herdr's `foreground_cwd` (and real tmux's `pane_current_path`, on the same OS-level cwd primitive) report the PHYSICALLY resolved path.
   When the project itself lived under a symlinked directory (e.g. macOS's `/tmp` -> `/private/tmp`), the very first worktree-discovery poll saw two different strings for the identical starting directory and the isolation guard false-refused the spawn as "not isolated" before `treehouse get` ever moved the pane - backend-agnostic, not specific to herdr.

@@ -54,6 +54,13 @@ The shared no-mistakes gate refusal used by `fm-spawn.sh`, `fm-send.sh`, and `fm
 | `fm-lifecycle-import.sh` | Idempotently import legacy `.meta` tasks into lifecycle state                       |
 | `fm-lifecycle-admit.sh`  | Enforce duplicate-objective and per-repo WIP admission gates                        |
 | `fm-lifecycle-reconcile.sh` | Classify owned worktrees without destructive mutation                              |
+| `fm-marker-lib.sh`       | Shared from-firstmate request marker and detector                                    |
+| `fm-watch-arm.sh`        | Verified home-scoped watcher arm wrapper with honest status reporting                |
+| `fm-watch-checkpoint.sh` | Run one bounded foreground watcher checkpoint for Codex-style supervision            |
+| `fm-watch.sh`            | Singleton-safe always-on watcher: absorb benign wakes, queue and exit on actionable ones |
+| `fm-afk-start.sh`        | Enter away mode and run the sub-supervisor daemon as a tracked foreground process    |
+| `fm-supervise-daemon.sh` | Presence-gated away-mode sub-supervisor: self-handle routine wakes, escalate batched digests, alert on failed delivery |
+| `fm-crew-state.sh`       | Print one deterministic current-state line for a crew                                |
 | `fm-tangle-lib.sh`       | Shared default-branch resolution and primary-checkout tangle classification          |
 | `fm-supervision-lib.sh`  | Shared in-flight-work-without-fresh-watcher-beacon predicate                         |
 | `fm-ff-lib.sh`           | Shared guarded fast-forward helper for origin pulls and local secondmate syncs       |

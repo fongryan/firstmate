@@ -15,6 +15,7 @@ Prerequisites:
 - The `orca` CLI: `brew install orca`.
 - `node`, used by firstmate's adapter to parse Orca's JSON output and to gate spawns on runtime readiness.
 - The universal firstmate prerequisites - a verified crew harness plus the required toolchain, owned by [`docs/configuration.md`](configuration.md) ("Harness support", "Toolchain") - with `orca` as the only backend-specific tool, since Orca provides both the task worktree and terminal while the other backends use Firstmate's direct Git worktree provider.
+- The universal firstmate prerequisites minus `tmux` and `treehouse` (Orca replaces both) - a verified crew harness plus the required toolchain, owned by [`docs/configuration.md`](configuration.md) ("Harness support", "Toolchain").
 
 Select Orca by putting `orca` in a local `config/backend` file - the durable way to pick it - or by exporting `FM_BACKEND=orca` when you launch your harness for a one-off session; telling the first mate in chat to use Orca also works.
 It is never auto-detected.
