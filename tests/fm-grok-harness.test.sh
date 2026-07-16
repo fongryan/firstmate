@@ -15,9 +15,6 @@ make_spawn_fakebin() {
   cat > "$fakebin/tmux" <<'SH'
 #!/usr/bin/env bash
 set -u
-case "$*" in
-  *"#{pane_current_path}"*) printf '%s\n' "${FM_FAKE_PANE_PATH:-}"; exit 0 ;;
-esac
 case "${1:-}" in
   display-message) printf 'firstmate\n'; exit 0 ;;
   list-windows) exit 0 ;;
@@ -26,43 +23,46 @@ esac
 exit 0
 SH
   chmod +x "$fakebin/tmux"
-  fm_fake_exit0 "$fakebin" treehouse gh-axi gh
+  fm_fake_exit0 "$fakebin" gh-axi gh
   printf '%s\n' "$fakebin"
 }
 
 make_spawn_case() {
-  local name=$1 case_dir home proj wt fakebin grok_home id
+  local name=$1 case_dir home proj wt worktree_root fakebin grok_home id
   case_dir="$TMP_ROOT/$name"
   home="$case_dir/home"
   proj="$case_dir/project"
-  wt="$case_dir/wt"
+  worktree_root="$case_dir/worktrees"
   fakebin=$(make_spawn_fakebin "$case_dir/fake")
   grok_home="$case_dir/grok"
   id="grok-$name-x1"
+  wt="$worktree_root/$id"
   mkdir -p "$home/data/$id" "$home/projects" "$home/state" "$home/config" "$grok_home"
   printf 'brief\n' > "$home/data/$id/brief.md"
-  fm_git_worktree "$proj" "$wt" "fm/$id"
+  git init -q -b main "$proj"
+  git -C "$proj" -c user.name=fmtest -c user.email=fmtest@example.invalid \
+    commit -q --allow-empty -m init
   touch "$home/state/.last-watcher-beat"
-  printf '%s\n' "$case_dir|$home|$proj|$wt|$fakebin|$grok_home|$id"
+  printf '%s\n' "$case_dir|$home|$proj|$wt|$worktree_root|$fakebin|$grok_home|$id"
 }
 
 run_grok_spawn() {
-  local home=$1 proj=$2 wt=$3 fakebin=$4 grok_home=$5 id=$6
+  local home=$1 proj=$2 worktree_root=$3 fakebin=$4 grok_home=$5 id=$6
   FM_ROOT_OVERRIDE='' FM_HOME="$home" \
     FM_STATE_OVERRIDE="$home/state" FM_DATA_OVERRIDE="$home/data" \
     FM_PROJECTS_OVERRIDE="$home/projects" FM_CONFIG_OVERRIDE="$home/config" \
-    FM_SPAWN_NO_GUARD=1 FM_FAKE_PANE_PATH="$wt" TMUX="fake,1,0" \
+    FM_WORKTREE_ROOT="$worktree_root" FM_SPAWN_NO_GUARD=1 TMUX="fake,1,0" \
     GROK_HOME="$grok_home" PATH="$fakebin:$PATH" \
     "$SPAWN" "$id" "$proj" grok 2>&1
 }
 
 test_grok_hook_requires_registered_token() {
-  local rec case_dir home proj wt fakebin grok_home id out status hook token target evil evil_target
+  local rec case_dir home proj wt worktree_root fakebin grok_home id out status hook token target evil evil_target
   rec=$(make_spawn_case hook-auth)
-  IFS='|' read -r case_dir home proj wt fakebin grok_home id <<EOF
+  IFS='|' read -r case_dir home proj wt worktree_root fakebin grok_home id <<EOF
 $rec
 EOF
-  out=$(run_grok_spawn "$home" "$proj" "$wt" "$fakebin" "$grok_home" "$id")
+  out=$(run_grok_spawn "$home" "$proj" "$worktree_root" "$fakebin" "$grok_home" "$id")
   status=$?
   expect_code 0 "$status" "grok spawn should succeed"
   assert_contains "$out" "spawned $id harness=grok" "grok spawn did not report success"
@@ -96,12 +96,12 @@ EOF
 }
 
 test_grok_teardown_removes_pointer_and_token() {
-  local rec case_dir home proj wt fakebin grok_home id out status token
+  local rec case_dir home proj wt worktree_root fakebin grok_home id out status token
   rec=$(make_spawn_case teardown)
-  IFS='|' read -r case_dir home proj wt fakebin grok_home id <<EOF
+  IFS='|' read -r case_dir home proj wt worktree_root fakebin grok_home id <<EOF
 $rec
 EOF
-  out=$(run_grok_spawn "$home" "$proj" "$wt" "$fakebin" "$grok_home" "$id")
+  out=$(run_grok_spawn "$home" "$proj" "$worktree_root" "$fakebin" "$grok_home" "$id")
   status=$?
   expect_code 0 "$status" "grok spawn should succeed before teardown"
   token=$(sed -n 's/^token=//p' "$wt/.fm-grok-turnend")

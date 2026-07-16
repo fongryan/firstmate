@@ -2,6 +2,7 @@
 # Regression test: the shared Codex desktop app-server is not a Firstmate session.
 set -u
 
+# shellcheck source=tests/lib.sh
 . "$(dirname "${BASH_SOURCE[0]}")/lib.sh"
 
 home_root=$(fm_test_tmproot fm-lock-codex-app-server)

@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 # Behavior tests for the worktree-tangle guards.
 #
-# Firstmate is a treehouse-pooled git repo of itself: linked worktrees and
-# secondmate homes all sit at a detached HEAD on the default branch, while the
+# Firstmate uses registered direct Git worktrees: linked worktrees and
+# secondmate homes sit at a detached HEAD on the default branch, while the
 # PRIMARY checkout (FM_ROOT) is a normal checkout on a real branch. The "tangle"
 # is a crewmate branching/committing in the primary instead of its own worktree,
 # stranding the primary on a feature branch. Two guards cover it:
@@ -149,69 +149,80 @@ test_brief_assertion_precedes_branch() {
 
 # --- GUARD 1b: fm-spawn isolation abort -------------------------------------
 
-# A fake tmux that reports FM_FAKE_PANE_PATH as the post-`treehouse get` pane cwd
-# (so the spawn's worktree-resolution loop resolves to a path we control), names
-# the session on '#S', and swallows window ops. Echoes the fakebin dir.
+# A fake tmux that names the session on '#S' and swallows window operations.
+# Direct Git worktree creation is exercised for real under a per-test root.
 make_spawn_fakebin() {
   local dir=$1 fakebin
   fakebin=$(fm_fakebin "$dir")
   cat > "$fakebin/tmux" <<'SH'
 #!/usr/bin/env bash
 set -u
-case "$*" in
-  *"#{pane_current_path}"*) printf '%s\n' "${FM_FAKE_PANE_PATH:-}"; exit 0 ;;
-esac
 case "${1:-}" in
   display-message) printf 'firstmate\n'; exit 0 ;;
   list-windows) exit 0 ;;
-  has-session|new-session|new-window|send-keys) exit 0 ;;
+  new-window) printf '%s\n' '@spawnwid'; exit 0 ;;
+  has-session|new-session|send-keys|set-window-option) exit 0 ;;
 esac
 exit 0
 SH
   chmod +x "$fakebin/tmux"
-  fm_fake_exit0 "$fakebin" treehouse
+  cat > "$fakebin/codex" <<'SH'
+#!/usr/bin/env bash
+if [ "${1:-}" = --version ]; then
+  printf '%s\n' 'codex-cli 9.9.9'
+fi
+exit 0
+SH
+  chmod +x "$fakebin/codex"
   printf '%s\n' "$fakebin"
 }
 
 run_spawn() {
-  local home=$1 id=$2 proj=$3 pane=$4 fakebin=$5
+  local home=$1 id=$2 proj=$3 worktree_root=$4 fakebin=$5
   mkdir -p "$home/data/$id"
   printf 'brief\n' > "$home/data/$id/brief.md"
   FM_ROOT_OVERRIDE='' FM_HOME="$home" \
     FM_STATE_OVERRIDE="$home/state" FM_DATA_OVERRIDE="$home/data" \
     FM_PROJECTS_OVERRIDE="$home/projects" FM_CONFIG_OVERRIDE="$home/config" \
-    FM_SPAWN_NO_GUARD=1 FM_FAKE_PANE_PATH="$pane" TMUX="fake,1,0" \
+    FM_WORKTREE_ROOT="$worktree_root" FM_SPAWN_NO_GUARD=1 TMUX="fake,1,0" \
     PATH="$fakebin:$PATH" \
     "$ROOT/bin/fm-spawn.sh" "$id" "$proj" codex 2>&1
 }
 
 test_spawn_isolation_abort() {
-  local home proj fakebin out status
+  local home proj fakebin worktree_root collision id out status expected_wt
   home="$TMP_ROOT/spawn-home"
   mkdir -p "$home/data"
   proj=$(make_repo "$TMP_ROOT/spawn-proj")
   fakebin=$(make_spawn_fakebin "$TMP_ROOT/spawn-fake")
-  # A genuine isolated linked worktree of the project, detached on the default.
-  git -C "$proj" worktree add -q --detach "$TMP_ROOT/spawn-wt" >/dev/null 2>&1
-  mkdir -p "$TMP_ROOT/spawn-notgit" "$proj/sub"
+  worktree_root="$TMP_ROOT/spawn-worktrees"
+  mkdir -p "$worktree_root"
+  worktree_root=$(cd "$worktree_root" && pwd -P)
 
-  # Abort: the pane resolves to a plain non-git directory (not a worktree at all).
-  out=$(run_spawn "$home" abort-notgit-dd4 "$proj" "$TMP_ROOT/spawn-notgit" "$fakebin"); status=$?
-  expect_code 1 "$status" "spawn into a non-worktree dir should abort"
-  assert_contains "$out" "did not yield an isolated worktree" "non-worktree spawn lacked the isolation error"
-  assert_absent "$home/state/abort-notgit-dd4.meta" "aborted spawn must not record meta"
+  # Abort: a pre-existing target that Git has not registered must never be
+  # adopted as a task worktree.
+  id=abort-unregistered-dd4
+  collision="$worktree_root/$id"
+  mkdir -p "$collision"
+  out=$(run_spawn "$home" "$id" "$proj" "$worktree_root" "$fakebin"); status=$?
+  expect_code 1 "$status" "spawn into an unregistered target collision should abort"
+  assert_contains "$out" "worktree target exists but is not registered" "collision lacked the registered-worktree error"
+  assert_absent "$home/state/$id.meta" "aborted spawn must not record meta"
 
-  # Abort: the pane resolves INTO the primary checkout (a subdir of PROJ_ABS).
-  out=$(run_spawn "$home" abort-primary-ee5 "$proj" "$proj/sub" "$fakebin"); status=$?
-  expect_code 1 "$status" "spawn landing inside the primary checkout should abort"
-  assert_contains "$out" "did not yield an isolated worktree" "primary-checkout spawn lacked the isolation error"
-
-  # Proceed: the pane resolves to a genuine, isolated worktree.
-  out=$(run_spawn "$home" ok-isolated-ff6 "$proj" "$TMP_ROOT/spawn-wt" "$fakebin"); status=$?
-  expect_code 0 "$status" "spawn into a genuine isolated worktree should succeed"
-  assert_contains "$out" "spawned ok-isolated-ff6" "isolated spawn did not report success"
+  # Proceed: the provider creates and registers the canonical generated path,
+  # which must be distinct from the primary checkout.
+  id=ok-isolated-ff6
+  expected_wt="$worktree_root/$id"
+  out=$(run_spawn "$home" "$id" "$proj" "$worktree_root" "$fakebin"); status=$?
+  expect_code 0 "$status" "spawn through the direct Git provider should succeed"
+  assert_contains "$out" "spawned $id" "isolated spawn did not report success"
   assert_not_contains "$out" "did not yield an isolated worktree" "isolated spawn wrongly tripped the guard"
-  pass "fm-spawn: aborts unless the resolved worktree is a genuine, isolated worktree"
+  assert_grep "worktree=$expected_wt" "$home/state/$id.meta" "spawn meta did not record the canonical generated worktree"
+  git -C "$proj" worktree list --porcelain | grep -F "worktree $expected_wt" >/dev/null \
+    || fail "generated task worktree was not registered with the project"
+  [ "$(cd "$expected_wt" && pwd -P)" != "$(cd "$proj" && pwd -P)" ] \
+    || fail "generated task worktree resolved to the primary checkout"
+  pass "fm-spawn: refuses unregistered collisions and creates a registered isolated worktree"
 }
 
 # --- GUARD 1c: fm-spawn tmux window construction ----------------------------
@@ -224,11 +235,9 @@ test_spawn_isolation_abort() {
 #     tmux appends at the next free index instead of the active window index, which
 #     collides under base-index 1;
 #   - the window id is captured (-P -F #{window_id}) and automatic-rename/allow-rename
-#     are disabled so the fm-<id> name survives treehouse cd'ing into the worktree;
-#   - the treehouse-get send-keys and the worktree wait loop target that stable
-#     window id, never the (possibly-renamed) name - a lost name would let
-#     display-message fall back to the active client's window and misread firstmate's
-#     OWN pane as the worktree, tangling a hook into the primary checkout.
+#     are disabled so the fm-<id> name survives the harness launch;
+#   - the backend starts directly in the provider-created worktree, never in the
+#     primary checkout.
 make_spawn_record_fakebin() {
   local dir=$1 fakebin
   fakebin=$(fm_fakebin "$dir")
@@ -236,9 +245,6 @@ make_spawn_record_fakebin() {
 #!/usr/bin/env bash
 set -u
 [ -n "${FM_TMUX_REC:-}" ] && printf 'tmux %s\n' "$*" >> "$FM_TMUX_REC"
-case "$*" in
-  *"#{pane_current_path}"*) printf '%s\n' "${FM_FAKE_PANE_PATH:-}"; exit 0 ;;
-esac
 case "${1:-}" in
   display-message) printf 'firstmate\n'; exit 0 ;;
   new-window) printf '%s\n' "@spawnwid"; exit 0 ;;
@@ -248,35 +254,44 @@ esac
 exit 0
 SH
   chmod +x "$fakebin/tmux"
-  fm_fake_exit0 "$fakebin" treehouse
+  cat > "$fakebin/codex" <<'SH'
+#!/usr/bin/env bash
+if [ "${1:-}" = --version ]; then
+  printf '%s\n' 'codex-cli 9.9.9'
+fi
+exit 0
+SH
+  chmod +x "$fakebin/codex"
   printf '%s\n' "$fakebin"
 }
 
 run_spawn_record() {
-  local home=$1 id=$2 proj=$3 pane=$4 fakebin=$5 rec=$6
+  local home=$1 id=$2 proj=$3 worktree_root=$4 fakebin=$5 rec=$6
   mkdir -p "$home/data/$id"
   printf 'brief\n' > "$home/data/$id/brief.md"
   FM_ROOT_OVERRIDE='' FM_HOME="$home" \
     FM_STATE_OVERRIDE="$home/state" FM_DATA_OVERRIDE="$home/data" \
     FM_PROJECTS_OVERRIDE="$home/projects" FM_CONFIG_OVERRIDE="$home/config" \
-    FM_SPAWN_NO_GUARD=1 FM_FAKE_PANE_PATH="$pane" TMUX="fake,1,0" \
+    FM_WORKTREE_ROOT="$worktree_root" FM_SPAWN_NO_GUARD=1 TMUX="fake,1,0" \
     FM_TMUX_REC="$rec" \
     PATH="$fakebin:$PATH" \
     "$ROOT/bin/fm-spawn.sh" "$id" "$proj" codex 2>&1
 }
 
 test_spawn_tmux_window_construction() {
-  local home proj fakebin rec wt out status
+  local home proj fakebin rec worktree_root wt out status
   home="$TMP_ROOT/spawn-rec-home"
   mkdir -p "$home/data"
   proj=$(make_repo "$TMP_ROOT/spawn-rec-proj")
   fakebin=$(make_spawn_record_fakebin "$TMP_ROOT/spawn-rec-fake")
   rec="$TMP_ROOT/spawn-rec.log"
   : > "$rec"
-  wt="$TMP_ROOT/spawn-rec-wt"
-  git -C "$proj" worktree add -q --detach "$wt" >/dev/null 2>&1
+  worktree_root="$TMP_ROOT/spawn-rec-worktrees"
+  mkdir -p "$worktree_root"
+  worktree_root=$(cd "$worktree_root" && pwd -P)
+  wt="$worktree_root/rec-win-gg7"
 
-  out=$(run_spawn_record "$home" rec-win-gg7 "$proj" "$wt" "$fakebin" "$rec"); status=$?
+  out=$(run_spawn_record "$home" rec-win-gg7 "$proj" "$worktree_root" "$fakebin" "$rec"); status=$?
   expect_code 0 "$status" "spawn into a genuine worktree should succeed"
   assert_contains "$out" "spawned rec-win-gg7" "recording spawn did not report success"
 
@@ -292,11 +307,11 @@ test_spawn_tmux_window_construction() {
   assert_grep "set-window-option -t @spawnwid allow-rename off" "$rec" \
     "must disable allow-rename on the spawned window"
 
-  # Bug 2 fix (b): treehouse-get and the worktree wait loop target the stable id.
-  assert_grep "send-keys -t @spawnwid treehouse get Enter" "$rec" \
-    "treehouse get must be sent to the stable window id"
-  assert_grep "display-message -p -t @spawnwid #{pane_current_path}" "$rec" \
-    "the worktree wait loop must query the stable window id, not the name"
+  # Direct-provider safety: the backend itself starts in the registered task
+  # worktree. There is no ambient pane-path discovery or Treehouse command.
+  assert_grep "new-window -dP -F #{window_id} -t firstmate: -n fm-rec-win-gg7 -c $wt" "$rec" \
+    "tmux task must start in the provider-created worktree"
+  assert_no_grep "treehouse" "$rec" "direct Git spawn must not invoke Treehouse"
 
   pass "fm-spawn: appends windows by session-colon, pins the name, and targets the window id"
 }

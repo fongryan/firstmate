@@ -441,6 +441,43 @@ test_bounded_runner_preserves_signal_failure() {
   pass "fm_run_bounded preserves signaled child failures"
 }
 
+test_bounded_runner_kills_term_ignoring_child() {
+  local bounded child_pid_file result_file runner_pid child_pid rc i
+  bounded=$(sed -n '/^fm_run_bounded() {/,/^}/p' "$ROOT/bin/fm-bootstrap.sh")
+  eval "$bounded"
+  mkdir -p "$TMP_ROOT"
+  child_pid_file="$TMP_ROOT/term-ignoring-child.pid"
+  result_file="$TMP_ROOT/term-ignoring-result"
+
+  (
+    set +e
+    # shellcheck disable=SC2016 # The bounded child expands its own pid and positional output path.
+    fm_run_bounded 1 bash -c 'printf "%s\n" "$$" > "$1"; trap "" TERM; while :; do sleep 1; done' _ "$child_pid_file"
+    printf '%s\n' "$?" > "$result_file"
+  ) &
+  runner_pid=$!
+
+  i=0
+  while kill -0 "$runner_pid" 2>/dev/null && [ "$i" -lt 40 ]; do
+    sleep 0.1
+    i=$((i + 1))
+  done
+  if kill -0 "$runner_pid" 2>/dev/null; then
+    child_pid=$(cat "$child_pid_file" 2>/dev/null || true)
+    case "$child_pid" in
+      ''|*[!0-9]*) ;;
+      *) kill -KILL "-$child_pid" 2>/dev/null || true ;;
+    esac
+    kill -KILL "$runner_pid" 2>/dev/null || true
+    wait "$runner_pid" 2>/dev/null || true
+    fail "fm_run_bounded exceeded its deadline when the child ignored TERM"
+  fi
+  wait "$runner_pid" 2>/dev/null || true
+  rc=$(cat "$result_file" 2>/dev/null || true)
+  [ "$rc" = 124 ] || fail "a TERM-ignoring child must be KILLed and return timeout 124 (rc=${rc:-missing})"
+  pass "fm_run_bounded escalates to KILL when a timed-out child ignores TERM"
+}
+
 test_sweep_rotates_after_cursor() {
   local w fb tmuxfb log out
   w=$(new_world sweep-rotation)
@@ -470,6 +507,7 @@ test_sweep_noop_with_no_secondmate_meta
 test_sweep_respects_respawn_budget_and_reports_partial_recovery
 test_sweep_bounds_probe_and_spawn_timeouts
 test_bounded_runner_preserves_signal_failure
+test_bounded_runner_kills_term_ignoring_child
 test_sweep_rotates_after_cursor
 
 echo "# all fm-secondmate-liveness tests passed"

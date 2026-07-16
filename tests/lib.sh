@@ -58,21 +58,34 @@ pass() {
 # call fm_test_cleanup from inside it so registered dirs are still removed.
 
 FM_TEST_CLEANUP_DIRS=()
+FM_TEST_CLEANUP_OWNER_SUBSHELL=${BASH_SUBSHELL:-0}
+FM_TEST_CLEANUP_MANIFEST=$(mktemp "${TMPDIR:-/tmp}/fm-test-cleanup.XXXXXX")
 
 fm_test_cleanup() {
   local d
+  [ "${BASH_SUBSHELL:-0}" = "$FM_TEST_CLEANUP_OWNER_SUBSHELL" ] || return 0
+  if [ -f "$FM_TEST_CLEANUP_MANIFEST" ]; then
+    while IFS= read -r d; do
+      [ -n "$d" ] && rm -rf "$d"
+    done < "$FM_TEST_CLEANUP_MANIFEST"
+    rm -f "$FM_TEST_CLEANUP_MANIFEST"
+  fi
   for d in "${FM_TEST_CLEANUP_DIRS[@]:-}"; do
     [ -n "$d" ] && rm -rf "$d"
   done
+  return 0
 }
+
+trap fm_test_cleanup EXIT
 
 fm_test_tmproot() {
   local prefix=${1:-fm-test} root
   root=$(mktemp -d "${TMPDIR:-/tmp}/${prefix}.XXXXXX")
-  if [ "${#FM_TEST_CLEANUP_DIRS[@]}" -eq 0 ]; then
-    trap fm_test_cleanup EXIT
-  fi
-  FM_TEST_CLEANUP_DIRS+=("$root")
+  # Most callers use command substitution, so this function runs in a subshell
+  # and cannot mutate the parent's array. The parent-owned manifest crosses
+  # that boundary; the BASH_SUBSHELL guard prevents a subshell EXIT trap from cleaning
+  # the root before the caller can use it.
+  printf '%s\n' "$root" >> "$FM_TEST_CLEANUP_MANIFEST"
   printf '%s\n' "$root"
 }
 

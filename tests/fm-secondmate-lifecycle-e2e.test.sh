@@ -31,7 +31,9 @@ TMP_ROOT=$(fm_test_tmproot fm-secondmate-lifecycle)
 export FM_BACKEND=tmux
 
 HOME_DIR="$TMP_ROOT/main home"
-SUB="$TMP_ROOT/design-home"
+FMROOT="$TMP_ROOT/firstmate-root"
+WORKTREE_ROOT="$TMP_ROOT/worktrees"
+SUB="$WORKTREE_ROOT/secondmate-design"
 SUB_ABS=
 FAKEBIN=
 LOG="$TMP_ROOT/tmux.log"
@@ -41,6 +43,8 @@ BETA_ORIGIN=
 
 # --- shared world + seed ----------------------------------------------------
 setup_world() {
+  git clone --quiet "$ROOT" "$FMROOT"
+  mkdir -p "$WORKTREE_ROOT"
   mkdir -p "$HOME_DIR/projects" "$HOME_DIR/data" "$HOME_DIR/state"
   fm_git_init_commit "$HOME_DIR/projects/alpha"
   fm_git_init_commit "$HOME_DIR/projects/beta"
@@ -51,12 +55,12 @@ setup_world() {
   cat > "$HOME_DIR/data/projects.md" <<EOF
 - alpha [direct-PR +yolo] - alpha project (added 2026-06-22)
 - beta [direct-PR] - beta project (added 2026-06-22)
-- gamma - gamma project (added 2026-06-22)
+- gamma [no-mistakes] - gamma project (added 2026-06-22)
 EOF
   ALPHA_ORIGIN=$(git -C "$HOME_DIR/projects/alpha" remote get-url origin)
   BETA_ORIGIN=$(git -C "$HOME_DIR/projects/beta" remote get-url origin)
 
-  # One combined fakebin: tmux + treehouse (spawn/send/teardown) and no-mistakes
+  # One combined fakebin: tmux (spawn/send/teardown) and no-mistakes
   # (gamma initialization during seed).
   FAKEBIN=$(make_fake_tmux "$TMP_ROOT/fake")
   make_fake_no_mistakes "$TMP_ROOT/fake" >/dev/null
@@ -70,8 +74,8 @@ EOF
 
 phase_seed() {
   local out
-  out=$(PATH="$FAKEBIN:$PATH" FM_HOME="$HOME_DIR" \
-    "$ROOT/bin/fm-home-seed.sh" design "$SUB" alpha beta gamma) \
+  out=$(PATH="$FAKEBIN:$PATH" FM_ROOT_OVERRIDE="$FMROOT" FM_WORKTREE_ROOT="$WORKTREE_ROOT" FM_HOME="$HOME_DIR" \
+    "$ROOT/bin/fm-home-seed.sh" design - alpha beta gamma) \
     || fail "seed failed"
   SUB_ABS=$(cd "$SUB" && pwd -P)
 
@@ -112,7 +116,7 @@ phase_seed() {
 
 phase_spawn() {
   : > "$LOG"
-  PATH="$FAKEBIN:$PATH" FM_HOME="$HOME_DIR" FM_CONFIG_OVERRIDE="$HOME_DIR/parent-config" \
+  PATH="$FAKEBIN:$PATH" FM_ROOT_OVERRIDE="$FMROOT" FM_WORKTREE_ROOT="$WORKTREE_ROOT" FM_HOME="$HOME_DIR" FM_CONFIG_OVERRIDE="$HOME_DIR/parent-config" \
     FM_FAKE_TMUX_LOG="$LOG" FM_FAKE_TMUX_CAPTURE="$PANE" \
     "$ROOT/bin/fm-spawn.sh" design "$SUB" codex --secondmate >/dev/null \
     || fail "secondmate spawn failed"
@@ -195,12 +199,13 @@ EOF
 }
 
 phase_recovery() {
+  local out
   # Simulate a restart: drop the live meta, then respawn from the registry +
   # persistent home (no explicit home argument).
   rm -f "$HOME_DIR/state/design.meta"
-  PATH="$FAKEBIN:$PATH" FM_HOME="$HOME_DIR" FM_FAKE_TMUX_LOG="$LOG" FM_FAKE_TMUX_CAPTURE="$PANE" \
-    "$ROOT/bin/fm-spawn.sh" design "echo relaunch" --secondmate >/dev/null 2>&1 \
-    || fail "recovery respawn failed"
+  out=$(PATH="$FAKEBIN:$PATH" FM_ROOT_OVERRIDE="$FMROOT" FM_WORKTREE_ROOT="$WORKTREE_ROOT" FM_HOME="$HOME_DIR" FM_FAKE_TMUX_LOG="$LOG" FM_FAKE_TMUX_CAPTURE="$PANE" \
+    "$ROOT/bin/fm-spawn.sh" design "echo relaunch" --secondmate 2>&1) \
+    || fail "recovery respawn failed:${out:+$'\n'$out}"
   local meta="$HOME_DIR/state/design.meta"
   assert_grep "home=$SUB_ABS" "$meta" "respawn did not preserve the persistent home from the registry"
   assert_grep 'projects=alpha, beta, gamma' "$meta" "respawn did not preserve the project list from the registry"
@@ -211,9 +216,9 @@ phase_recovery() {
 phase_teardown() {
   local teardown_out
   : > "$LOG"
-  teardown_out=$(PATH="$FAKEBIN:$PATH" FM_HOME="$HOME_DIR" FM_FAKE_TMUX_LOG="$LOG" FM_FAKE_TMUX_CAPTURE="$PANE" \
+  teardown_out=$(PATH="$FAKEBIN:$PATH" FM_ROOT_OVERRIDE="$FMROOT" FM_WORKTREE_ROOT="$WORKTREE_ROOT" FM_HOME="$HOME_DIR" FM_FAKE_TMUX_LOG="$LOG" FM_FAKE_TMUX_CAPTURE="$PANE" \
     "$ROOT/bin/fm-teardown.sh" design 2>&1) \
-    || fail "teardown failed for the empty secondmate home"
+    || fail "teardown failed for the empty secondmate home:${teardown_out:+$'\n'$teardown_out}"
   printf '%s\n' "$teardown_out" | grep -F 'Backlog:' >/dev/null \
     && fail "secondmate teardown emitted a main-backlog completion reminder"
   assert_absent "$SUB" "teardown did not remove the retired secondmate home"

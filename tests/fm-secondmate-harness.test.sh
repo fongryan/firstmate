@@ -660,9 +660,10 @@ test_spawn_fallback_chain_and_crew_scout_unaffected() {
   id="crew-unaffected-z1"
   home="$w/home"
   proj="$w/crew-project"
-  wt="$w/crew-wt"
+  wt="$w/crew-worktrees/$id"
   fakebin=$(make_launch_capturing_tmux "$w/tmux-crew")
-  fm_git_worktree "$proj" "$wt" "wt-crew"
+  fm_git_init_commit "$proj"
+  mkdir -p "$w/crew-worktrees"
   mkdir -p "$home/data/$id" "$home/projects" "$home/state"
   printf 'brief\n' > "$home/data/$id/brief.md"
   : > "$launchlog"
@@ -670,6 +671,7 @@ test_spawn_fallback_chain_and_crew_scout_unaffected() {
     FM_ROOT_OVERRIDE="$ROOT" FM_HOME="$home" \
     FM_STATE_OVERRIDE="$home/state" FM_DATA_OVERRIDE="$home/data" \
     FM_PROJECTS_OVERRIDE="$home/projects" FM_CONFIG_OVERRIDE="$home/config" \
+    FM_WORKTREE_ROOT="$w/crew-worktrees" \
     FM_SPAWN_NO_GUARD=1 FM_FAKE_PANE_PATH="$wt" FM_FAKE_LAUNCH_LOG="$launchlog" \
     "$ROOT/bin/fm-spawn.sh" "$id" "$proj" >/dev/null 2>&1
   meta="$home/state/$id.meta"

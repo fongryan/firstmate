@@ -244,7 +244,10 @@ SH
 wait_for_exit() {
   local pid=$1 limit=${2:-50} i=0
   while [ "$i" -lt "$limit" ]; do
-    if ! kill -0 "$pid" 2>/dev/null; then
+    # A completed background job may remain as a zombie until this shell calls
+    # wait. `kill -0` still succeeds for that zombie, so using it alone can turn
+    # a successful watcher exit into a false timeout (and can race PID reuse).
+    if ! is_live_non_zombie "$pid"; then
       wait "$pid"
       return "$?"
     fi

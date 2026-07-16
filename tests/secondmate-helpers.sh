@@ -104,7 +104,12 @@ make_fake_no_mistakes() {
 #!/usr/bin/env bash
 set -eu
 case "${1:-}" in
-  init) touch .no-mistakes-init ;;
+  init)
+    touch .no-mistakes-init
+    exclude=$(git rev-parse --git-path info/exclude)
+    grep -Fqx '.no-mistakes-init' "$exclude" 2>/dev/null || printf '%s\n' '.no-mistakes-init' >> "$exclude"
+    grep -Fqx '.no-mistakes-doctor' "$exclude" 2>/dev/null || printf '%s\n' '.no-mistakes-doctor' >> "$exclude"
+    ;;
   doctor) touch .no-mistakes-doctor ;;
   *) exit 2 ;;
 esac

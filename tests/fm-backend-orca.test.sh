@@ -491,7 +491,7 @@ test_spawn_writes_orca_metadata_and_launches_harness() {
     FM_PROJECTS_OVERRIDE="$TMP_ROOT/unused-projects" FM_SPAWN_NO_GUARD=1 \
     "$ROOT/bin/fm-spawn.sh" "$id" "$proj" claude --backend orca 2>&1 )
   expect_code 0 $? "fm-spawn.sh --backend orca should succeed with fake Orca"$'\n'"$out"
-  assert_contains "$out" "spawned $id harness=claude kind=ship mode=no-mistakes yolo=off window=fm-$id worktree=$wt" \
+  assert_contains "$out" "spawned $id harness=claude kind=ship mode=direct-PR yolo=off window=fm-$id worktree=$wt" \
     "spawn output missing Orca window/worktree summary"
   assert_grep "backend=orca" "$state/$id.meta" "meta missing backend=orca"
   assert_grep "window=fm-$id" "$state/$id.meta" "meta missing stable Orca window alias"
@@ -1143,12 +1143,15 @@ test_teardown_removes_orca_worktree_without_terminal_handle() {
 }
 
 test_secondmate_force_teardown_removes_orca_child_via_orca() {
-  local home subhome childproj childwt child_id neutral out rc
+  local home subhome childproj childwt child_id fmroot out rc
   home="$TMP_ROOT/orca-child-parent"
   subhome="$TMP_ROOT/orca-child-secondmate"
+  fmroot="$TMP_ROOT/orca-child-firstmate-root"
   childproj="$subhome/projects/alpha"
   childwt="$TMP_ROOT/orca-child-worktree"
   child_id="orcachildz6"
+  git clone --quiet "$ROOT" "$fmroot"
+  git -C "$fmroot" worktree add --quiet --detach "$subhome" HEAD
   mkdir -p "$home/state" "$home/data" "$subhome/state" "$subhome/projects"
   printf 'domain\n' > "$subhome/.fm-secondmate-home"
   fm_git_worktree "$childproj" "$childwt" "fm/$child_id"
@@ -1165,10 +1168,9 @@ test_secondmate_force_teardown_removes_orca_child_via_orca() {
   orca_case secondmate-child-cleanup
   printf '{"ok":true,"result":{"worktree":{"id":"wt-child-cleanup","path":"%s"}}}\n' "$childwt" > "$RESP/1.out"
   add_tmux_fake "$FB"
-  neutral=$(neutral_fm_root "$CASE_DIR/neutral")
   set +e
   out=$( PATH="$FB:$PATH" FM_ORCA_LOG="$LOG" FM_ORCA_RESPONSES="$RESP" \
-    FM_ROOT_OVERRIDE="$neutral" FM_HOME="$home" "$ROOT/bin/fm-teardown.sh" domain --force 2>&1 )
+    FM_ROOT_OVERRIDE="$fmroot" FM_HOME="$home" "$ROOT/bin/fm-teardown.sh" domain --force 2>&1 )
   rc=$?
   set -e
   expect_code 0 "$rc" "forced secondmate teardown should remove Orca child work through Orca"$'\n'"$out"
@@ -1183,13 +1185,16 @@ test_secondmate_force_teardown_removes_orca_child_via_orca() {
 }
 
 test_secondmate_force_teardown_refuses_orca_child_id_path_mismatch() {
-  local home subhome childproj childwt other_wt child_id neutral out rc
+  local home subhome childproj childwt other_wt child_id fmroot out rc
   home="$TMP_ROOT/orca-child-mismatch-parent"
   subhome="$TMP_ROOT/orca-child-mismatch-secondmate"
+  fmroot="$TMP_ROOT/orca-child-mismatch-firstmate-root"
   childproj="$subhome/projects/alpha"
   childwt="$TMP_ROOT/orca-child-mismatch-worktree"
   other_wt="$TMP_ROOT/orca-child-mismatch-other-worktree"
   child_id="orcachildmismatchz1"
+  git clone --quiet "$ROOT" "$fmroot"
+  git -C "$fmroot" worktree add --quiet --detach "$subhome" HEAD
   mkdir -p "$home/state" "$home/data" "$subhome/state" "$subhome/projects"
   printf 'domain\n' > "$subhome/.fm-secondmate-home"
   fm_git_worktree "$childproj" "$childwt" "fm/$child_id"
@@ -1207,10 +1212,9 @@ test_secondmate_force_teardown_refuses_orca_child_id_path_mismatch() {
   orca_case secondmate-child-mismatch
   printf '{"ok":true,"result":{"worktree":{"id":"wt-child-mismatch","path":"%s"}}}\n' "$other_wt" > "$RESP/1.out"
   add_tmux_fake "$FB"
-  neutral=$(neutral_fm_root "$CASE_DIR/neutral")
   set +e
   out=$( PATH="$FB:$PATH" FM_ORCA_LOG="$LOG" FM_ORCA_RESPONSES="$RESP" \
-    FM_ROOT_OVERRIDE="$neutral" FM_HOME="$home" "$ROOT/bin/fm-teardown.sh" domain --force 2>&1 )
+    FM_ROOT_OVERRIDE="$fmroot" FM_HOME="$home" "$ROOT/bin/fm-teardown.sh" domain --force 2>&1 )
   rc=$?
   set -e
   [ "$rc" -ne 0 ] || fail "forced secondmate teardown should refuse mismatched Orca child id/path"
@@ -1225,12 +1229,15 @@ test_secondmate_force_teardown_refuses_orca_child_id_path_mismatch() {
 }
 
 test_secondmate_force_teardown_removes_partial_orca_child() {
-  local home subhome childproj childwt child_id neutral out rc
+  local home subhome childproj childwt child_id fmroot out rc
   home="$TMP_ROOT/orca-partial-child-parent"
   subhome="$TMP_ROOT/orca-partial-child-secondmate"
+  fmroot="$TMP_ROOT/orca-partial-child-firstmate-root"
   childproj="$subhome/projects/alpha"
   childwt="$TMP_ROOT/orca-partial-child-worktree"
   child_id="orcapartialz9"
+  git clone --quiet "$ROOT" "$fmroot"
+  git -C "$fmroot" worktree add --quiet --detach "$subhome" HEAD
   mkdir -p "$home/state" "$home/data" "$subhome/state" "$subhome/projects"
   printf 'domain\n' > "$subhome/.fm-secondmate-home"
   fm_git_worktree "$childproj" "$childwt" "fm/$child_id"
@@ -1247,10 +1254,9 @@ test_secondmate_force_teardown_removes_partial_orca_child() {
   orca_case secondmate-partial-child-cleanup
   printf '{"ok":true,"result":{"worktree":{"id":"wt-partial-child","path":"%s"}}}\n' "$childwt" > "$RESP/1.out"
   add_tmux_fake "$FB"
-  neutral=$(neutral_fm_root "$CASE_DIR/neutral")
   set +e
   out=$( PATH="$FB:$PATH" FM_ORCA_LOG="$LOG" FM_ORCA_RESPONSES="$RESP" \
-    FM_ROOT_OVERRIDE="$neutral" FM_HOME="$home" "$ROOT/bin/fm-teardown.sh" domain --force 2>&1 )
+    FM_ROOT_OVERRIDE="$fmroot" FM_HOME="$home" "$ROOT/bin/fm-teardown.sh" domain --force 2>&1 )
   rc=$?
   set -e
   expect_code 0 "$rc" "forced secondmate teardown should remove partial Orca child state"$'\n'"$out"
