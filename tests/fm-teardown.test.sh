@@ -59,6 +59,7 @@
 #   (ag) metadata-only + Grok auth                             -> revoke, preserve pointer
 #   (ah) metadata-only + empty/unreadable Grok token            -> REFUSE fail closed
 #   (ai) metadata-only + absent tmux server socket              -> confirmed dead
+#   (aj) metadata-only + tmux target fallback/partial match      -> confirmed absent
 set -u
 
 # shellcheck source=tests/lib.sh disable=SC1091
@@ -1286,7 +1287,7 @@ test_metadata_only_preserves_worktree_and_clears_terminal_state() {
 #!/usr/bin/env bash
 case "${1:-}" in
   display-message) exit 1 ;;
-  list-panes) exit 0 ;;
+  list-windows) exit 0 ;;
   *) echo "unexpected tmux mutation: $*" >&2; exit 97 ;;
 esac
 SH
@@ -1317,7 +1318,14 @@ test_metadata_only_refuses_live_endpoint() {
   case_dir=$(make_case metadata-only-live)
   write_meta "$case_dir" no-mistakes ship
   printf '%s\n' 'superseded: terminal evidence' > "$case_dir/state/task-x1.status"
-  # make_case's tmux shim reports success, which represents a live endpoint.
+  cat > "$case_dir/fakebin/tmux" <<'SH'
+#!/usr/bin/env bash
+case "${1:-}" in
+  list-windows) printf '%s\n' 'firstmate:fm-task-x1'; exit 0 ;;
+  *) exit 1 ;;
+esac
+SH
+  chmod +x "$case_dir/fakebin/tmux"
   set +e
   run_teardown "$case_dir" --metadata-only > "$case_dir/stdout" 2> "$case_dir/stderr"
   rc=$?
@@ -1338,7 +1346,7 @@ test_metadata_only_refuses_nonterminal_ship() {
 #!/usr/bin/env bash
 case "${1:-}" in
   display-message) exit 1 ;;
-  list-panes) exit 0 ;;
+  list-windows) exit 0 ;;
   *) exit 1 ;;
 esac
 SH
@@ -1364,7 +1372,7 @@ test_metadata_only_accepts_dead_scout_with_report() {
 #!/usr/bin/env bash
 case "${1:-}" in
   display-message) exit 1 ;;
-  list-panes) exit 0 ;;
+  list-windows) exit 0 ;;
   *) exit 1 ;;
 esac
 SH
@@ -1443,7 +1451,7 @@ test_metadata_only_refuses_done_ready_to_validate() {
 #!/usr/bin/env bash
 case "${1:-}" in
   display-message) exit 1 ;;
-  list-panes) exit 0 ;;
+  list-windows) exit 0 ;;
   *) exit 1 ;;
 esac
 SH
@@ -1472,7 +1480,7 @@ test_metadata_only_revokes_grok_auth_and_preserves_worktree_pointer() {
 #!/usr/bin/env bash
 case "${1:-}" in
   display-message) exit 1 ;;
-  list-panes) exit 0 ;;
+  list-windows) exit 0 ;;
   *) exit 1 ;;
 esac
 SH
@@ -1497,7 +1505,7 @@ test_metadata_only_refuses_empty_or_unreadable_grok_token() {
 #!/usr/bin/env bash
 case "${1:-}" in
   display-message) exit 1 ;;
-  list-panes) exit 0 ;;
+  list-windows) exit 0 ;;
   *) exit 1 ;;
 esac
 SH
@@ -1550,6 +1558,31 @@ SH
   pass "metadata-only teardown treats the exact absent tmux server socket signature as confirmed dead"
 }
 
+test_metadata_only_requires_exact_tmux_window_identity() {
+  local case_dir
+  case_dir=$(make_case metadata-only-exact-tmux-target)
+  write_meta "$case_dir" no-mistakes ship
+  sed -i.bak 's/^window=.*/window=firstmate:fm-missing-task/' "$case_dir/state/task-x1.meta"
+  rm -f "$case_dir/state/task-x1.meta.bak"
+  printf '%s\n' 'superseded: stale record' > "$case_dir/state/task-x1.status"
+  cat > "$case_dir/fakebin/tmux" <<'SH'
+#!/usr/bin/env bash
+case "${1:-}" in
+  # tmux display-message may fall back to this default pane for a missing
+  # session:window selector; exact inventory must still classify the task dead.
+  display-message) printf '%s\n' '%0'; exit 0 ;;
+  list-windows) printf '%s\n' 'firstmate:zsh'; exit 0 ;;
+  *) exit 1 ;;
+esac
+SH
+  chmod +x "$case_dir/fakebin/tmux"
+  run_teardown "$case_dir" --metadata-only > "$case_dir/stdout" 2> "$case_dir/stderr" \
+    || fail "metadata-only-exact-tmux-target: missing exact window was not confirmed absent: $(cat "$case_dir/stderr")"
+  [ ! -e "$case_dir/state/task-x1.meta" ] || fail "metadata-only-exact-tmux-target: stale meta remains"
+  [ -d "$case_dir/wt" ] || fail "metadata-only-exact-tmux-target: worktree was touched"
+  pass "metadata-only teardown uses exact tmux window inventory instead of target fallback"
+}
+
 test_local_only_fork_remote_allows
 test_teardown_prompts_tasks_axi_done_when_compatible
 test_teardown_manual_backend_prompts_hand_edit_even_when_tasks_axi_present
@@ -1590,3 +1623,4 @@ test_metadata_only_refuses_done_ready_to_validate
 test_metadata_only_revokes_grok_auth_and_preserves_worktree_pointer
 test_metadata_only_refuses_empty_or_unreadable_grok_token
 test_metadata_only_accepts_absent_tmux_server_socket
+test_metadata_only_requires_exact_tmux_window_identity

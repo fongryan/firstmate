@@ -379,22 +379,44 @@ metadata_only_has_terminal_evidence() {
 #   unknown missing CLI, malformed target, permission/socket/query failure, or
 #           any backend whose tri-state behavior has not been verified.
 metadata_only_endpoint_state() {
-  local out rc
+  local out rc line matches=0 window_name
   [ -n "$T" ] || { printf 'unknown'; return 0; }
   [ "$BACKEND" = tmux ] || { printf 'unknown'; return 0; }
   command -v tmux >/dev/null 2>&1 || { printf 'unknown'; return 0; }
 
-  if tmux display-message -p -t "$T" '#{pane_id}' >/dev/null 2>&1; then
-    printf 'alive'
-    return 0
-  fi
-
   set +e
-  out=$(tmux list-panes -a -F '#{pane_id}' 2>&1)
+  out=$(tmux list-windows -a -F '#{session_name}:#{window_name}' 2>&1)
   rc=$?
   set -e
   if [ "$rc" -eq 0 ]; then
-    printf 'dead'
+    case "$T" in
+      *:*)
+        if printf '%s\n' "$out" | grep -qxF "$T"; then
+          printf 'alive'
+        else
+          printf 'dead'
+        fi
+        ;;
+      @*|%*)
+        # Stable ids need a different exact inventory format; unsupported here
+        # until a task records one and the behavior is covered empirically.
+        printf 'unknown'
+        ;;
+      *)
+        while IFS= read -r line; do
+          [ -n "$line" ] || continue
+          window_name=${line#*:}
+          [ "$window_name" = "$T" ] && matches=$(( matches + 1 ))
+        done <<EOF
+$out
+EOF
+        case "$matches" in
+          0) printf 'dead' ;;
+          1) printf 'alive' ;;
+          *) printf 'unknown' ;;
+        esac
+        ;;
+    esac
     return 0
   fi
   case "$out" in
