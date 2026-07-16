@@ -43,12 +43,10 @@
 #          landed in the primary instead of its own worktree; restore it per the line.
 #          Git linked worktrees are managed directly by Firstmate; no pool or
 #          lease provider is required.
-#          no-mistakes is also MISSING when its installed version is older than
-#          1.31.2.
 #          tasks-axi and quota-axi are required bootstrap tools (same class as
 #          lavish-axi). tasks-axi is also version and feature gated (0.1.1+
 #          with update --archive-body and mv [<id>...]); an installed but incompatible build
-#          reports MISSING like no-mistakes. When
+#          reports MISSING. When
 #          config/backlog-backend is not manual and tasks-axi is compatible,
 #          bootstrap prints TASKS_AXI: available. quota-axi is required because
 #          crew-dispatch quota-balanced may call it; fm-dispatch-select.sh still
@@ -211,21 +209,34 @@ fm_run_bounded() {
       my $status = $?;
       exit(($status & 127) ? 128 + ($status & 127) : ($status >> 8));
     }
-    my $timed_out = 0;
-    local $SIG{ALRM} = sub {
-      $timed_out = 1;
+    pipe(my $timeout_read, my $timeout_write) or die "timeout pipe failed: $!";
+    my $watchdog = fork;
+    if (!defined $watchdog) {
       kill "TERM", -$pid;
-    };
-    alarm $timeout;
-    waitpid $pid, 0;
-    my $status = $?;
-    alarm 0;
-    if ($timed_out) {
       select undef, undef, undef, 0.2;
       kill "KILL", -$pid;
       waitpid $pid, 0;
-      exit 124;
+      die "watchdog fork failed: $!";
     }
+    if (!$watchdog) {
+      close $timeout_read;
+      select undef, undef, undef, $timeout;
+      print {$timeout_write} "1";
+      close $timeout_write;
+      kill "TERM", -$pid;
+      select undef, undef, undef, 0.2;
+      kill "KILL", -$pid;
+      POSIX::_exit(0);
+    }
+    close $timeout_write;
+    waitpid $pid, 0;
+    my $status = $?;
+    kill "TERM", $watchdog;
+    waitpid $watchdog, 0;
+    my $timed_out = "";
+    sysread($timeout_read, $timed_out, 1);
+    close $timeout_read;
+    exit 124 if $timed_out eq "1";
     exit(($status & 127) ? 128 + ($status & 127) : ($status >> 8));
   ' "$seconds" "$@"
 }
@@ -439,9 +450,6 @@ install_cmd() {
   case "$1" in
     tmux|node|git|gh|curl|jq|orca|zellij) echo "brew install $1  # or the platform's package manager" ;;
     cmux) echo "brew install --cask cmux  # or see https://cmux.com" ;;
-    tmux|node|git|gh|curl|jq|orca) echo "brew install $1  # or the platform's package manager" ;;
-    treehouse) echo "curl -fsSL https://kunchenguid.github.io/treehouse/install.sh | sh" ;;
-    no-mistakes) echo "curl -fsSL https://raw.githubusercontent.com/kunchenguid/no-mistakes/main/docs/install.sh | sh" ;;
     gh-axi|chrome-devtools-axi|lavish-axi) echo "npm install -g $1 && $1 setup hooks" ;;
     tasks-axi|quota-axi) echo "npm install -g $1" ;;
     *) return 1 ;;
@@ -477,33 +485,6 @@ if ! BACKEND_TOOLS=$(fm_backend_required_tools "$BACKEND"); then
   BACKEND_VALID=0
   BACKEND_TOOLS=""
 fi
-TOOLS="$BACKEND_TOOLS $COMMON_TOOLS"
-case "$BACKEND" in
-  orca) TOOLS="orca node git gh no-mistakes gh-axi chrome-devtools-axi lavish-axi tasks-axi quota-axi" ;;
-  *) TOOLS="tmux node git gh treehouse no-mistakes gh-axi chrome-devtools-axi lavish-axi tasks-axi quota-axi" ;;
-esac
-NO_MISTAKES_MIN_MAJOR=1
-NO_MISTAKES_MIN_MINOR=31
-NO_MISTAKES_MIN_PATCH=2
-
-no_mistakes_version_parts() {
-  local output
-  command -v no-mistakes >/dev/null 2>&1 || return 1
-  output=$(no-mistakes --version 2>/dev/null) || return 1
-  printf '%s\n' "$output" | sed -nE 's/.*[vV]?([0-9]+)\.([0-9]+)\.([0-9]+).*/\1 \2 \3/p' | head -n 1
-}
-
-no_mistakes_compatible() {
-  local parts major minor patch extra
-  parts=$(no_mistakes_version_parts) || return 1
-  IFS=' ' read -r major minor patch extra <<< "$parts"
-  [ -n "$major" ] && [ -n "$minor" ] && [ -n "$patch" ] && [ -z "$extra" ] || return 1
-  [ "$major" -gt "$NO_MISTAKES_MIN_MAJOR" ] && return 0
-  [ "$major" -eq "$NO_MISTAKES_MIN_MAJOR" ] || return 1
-  [ "$minor" -gt "$NO_MISTAKES_MIN_MINOR" ] && return 0
-  [ "$minor" -eq "$NO_MISTAKES_MIN_MINOR" ] || return 1
-  [ "$patch" -ge "$NO_MISTAKES_MIN_PATCH" ]
-}
 
 # Write CONTENT to DEST only when it differs, so re-running bootstrap does not
 # churn mtimes or duplicate generated files (idempotence).
