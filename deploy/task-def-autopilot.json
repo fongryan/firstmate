@@ -23,6 +23,8 @@
         { "name": "FM_BACKEND", "value": "tmux" },
         { "name": "FM_CREW_HARNESS", "value": "claude" },
         { "name": "FM_AUTOPILOT_BRAIN", "value": "claude" },
+        { "name": "FM_AUTOPILOT_BRAIN_ROOT", "value": "/var/fm/home/projects/brain" },
+        { "name": "FM_AUTOPILOT_PROFILE_ROUTER", "value": "/opt/firstmate/bin/fm-agent-profile-route.mjs" },
         { "name": "FM_AUTOPILOT_ARMED", "value": "1" },
         { "name": "FM_AUTOPILOT_ARM_NOTE", "value": "cloud autopilot (ECS) armed at boot" },
         { "name": "FM_AUTOPILOT_TICK_SECS", "value": "120" },
@@ -58,4 +60,3 @@
     }
   ]
 }
-
