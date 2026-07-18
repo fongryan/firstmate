@@ -38,8 +38,26 @@ fm_git_worktree_registered() {
   return 1
 }
 
+fm_git_worktree_quarantine_stale() {
+  local target=$1 gitfile gitdir quarantine_root quarantine
+  [ -f "$target/.git" ] || return 1
+  gitfile=$(sed -n 's/^gitdir: //p' "$target/.git" | head -1)
+  [ -n "$gitfile" ] || return 1
+  case "$gitfile" in
+    /*) gitdir=$gitfile ;;
+    *) gitdir=$(cd "$target" 2>/dev/null && cd "$(dirname "$gitfile")" 2>/dev/null && pwd -P)/$(basename "$gitfile") || return 1 ;;
+  esac
+  [ ! -e "$gitdir" ] || return 1
+  quarantine_root=${FM_STALE_WORKTREE_QUARANTINE:-${TMPDIR:-/tmp}/firstmate-stale-worktrees}
+  mkdir -p "$quarantine_root" || return 1
+  quarantine="$quarantine_root/$(basename "$target").$(date +%s).$$"
+  mv "$target" "$quarantine" || return 1
+  echo "warning: quarantined stale Git worktree target $target -> $quarantine" >&2
+  return 0
+}
+
 fm_git_worktree_create() {
-  local project=$1 id=$2 target
+  local project=$1 id=$2 target alternate suffix
   project=$(cd "$project" 2>/dev/null && pwd -P) || {
     echo "error: project '$1' is not a directory" >&2
     return 1
@@ -51,11 +69,27 @@ fm_git_worktree_create() {
   target=$(fm_git_worktree_abs "$project" "$id") || return 1
   if [ -e "$target" ]; then
     fm_git_worktree_registered "$project" "$target" || {
-      echo "error: worktree target exists but is not registered: $target" >&2
-      return 1
+      if fm_git_worktree_quarantine_stale "$target"; then
+        :
+      else
+        # A persistent home can contain the same task id from a different
+        # checkout (or a prior clone whose Git admin dir still exists). Never
+        # touch that path; derive a deterministic project-specific target so
+        # retrying the task cannot deadlock the dispatcher.
+        suffix=$(printf '%s' "$project" | cksum | cut -d' ' -f1)
+        alternate=$(fm_git_worktree_abs "$project" "$id-$suffix") || return 1
+        if [ -e "$alternate" ]; then
+          echo "error: worktree targets exist but neither is registered for project: $target $alternate" >&2
+          return 1
+        fi
+        echo "warning: worktree id collision; using project-specific target $alternate" >&2
+        target=$alternate
+      fi
     }
-    printf '%s\n' "$target"
-    return 0
+    if [ -e "$target" ]; then
+      printf '%s\n' "$target"
+      return 0
+    fi
   fi
   git -C "$project" worktree add --detach "$target" HEAD >/dev/null || {
     echo "error: git worktree add failed for $target" >&2
