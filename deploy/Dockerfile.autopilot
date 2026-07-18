@@ -96,7 +96,7 @@ COPY .github/        /opt/firstmate/.github/
 COPY assets/         /opt/firstmate/assets/
 COPY tests/          /opt/firstmate/tests/
 COPY AGENTS.md CLAUDE.md CONTRIBUTING.md README.md LICENSE \
-     .tasks.toml .no-mistakes.yaml treehouse.toml \
+     .tasks.toml .no-mistakes.yaml \
      /opt/firstmate/
 COPY deploy/         /opt/firstmate/deploy/
 
@@ -107,4 +107,3 @@ RUN mkdir -p /var/fm/home /root/.claude /root/.codex /root/.config/gh
 
 # tini as PID 1 for correct signal + zombie handling around the loop.
 ENTRYPOINT ["/usr/bin/tini", "--", "/opt/firstmate/deploy/entrypoint.sh"]
-
