@@ -47,8 +47,36 @@ SH
   expect_code "3" "$(wc -l < "$log" | tr -d ' ')" "keeper performs the configured bounded restart attempts"
 }
 
+test_keeper_restarts_a_live_but_unhealthy_watcher() {
+  local state="$TMP_ROOT/unhealthy-state" fake="$TMP_ROOT/stuck-watch.sh" log="$TMP_ROOT/unhealthy.log" out rc
+  mkdir -p "$state"
+  cat > "$fake" <<'SH'
+#!/usr/bin/env bash
+echo child-started >> "$FM_KEEPER_TEST_LOG"
+trap 'echo child-stopped >> "$FM_KEEPER_TEST_LOG"; exit 0' TERM INT
+while :; do sleep 1; done
+SH
+  chmod +x "$fake"
+
+  set +e
+  out=$(timeout 6 env \
+    FM_HOME="$TMP_ROOT" FM_STATE_OVERRIDE="$state" \
+    FM_KEEPER_WATCH_COMMAND="$fake" FM_KEEPER_TEST_LOG="$log" \
+    FM_KEEPER_MAX_RESTARTS=1 FM_KEEPER_POLL=0 \
+    FM_KEEPER_STARTUP_GRACE=0 FM_KEEPER_TEST_MODE=1 \
+    "$KEEPER" --once 2>&1)
+  rc=$?
+  set -e
+  expect_code "0" "$rc" "keeper terminates and reaps a live watcher that never becomes healthy"
+  assert_grep "child-stopped" "$log" "keeper stops the unhealthy child it owns"
+  out=$(cat "$state/.supervision-keeper.log")
+  assert_contains "$out" "watcher unhealthy; restarting owned child" "keeper records the unhealthy-child restart decision"
+  pass "keeper restarts a live watcher whose lock/beacon never becomes healthy"
+}
+
 test_restart_predicate_requires_identity_and_freshness
 test_backoff_is_bounded
 test_keeper_restarts_a_crashing_child
+test_keeper_restarts_a_live_but_unhealthy_watcher
 
 echo "all supervision keeper tests passed"

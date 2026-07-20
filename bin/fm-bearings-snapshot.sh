@@ -65,7 +65,8 @@ validate_bound() {  # <name> <value>
   case "$2" in ''|*[!0-9]*|0) echo "fm-bearings-snapshot: $1 must be a positive integer" >&2; exit 2 ;; esac
 }
 validate_bound FM_BEARINGS_LANDED "$FM_BEARINGS_LANDED"
-validate_bound FM_BEARINGS_LANDED_PER_HOME "$FM_BEARINGS_LANDED_PER_HOME"validate_bound FM_BEARINGS_IN_FLIGHT "$FM_BEARINGS_IN_FLIGHT"
+validate_bound FM_BEARINGS_LANDED_PER_HOME "$FM_BEARINGS_LANDED_PER_HOME"
+validate_bound FM_BEARINGS_IN_FLIGHT "$FM_BEARINGS_IN_FLIGHT"
 validate_bound FM_BEARINGS_DECISIONS "$FM_BEARINGS_DECISIONS"
 validate_bound FM_BEARINGS_GATES "$FM_BEARINGS_GATES"
 validate_bound FM_BEARINGS_REPORTS "$FM_BEARINGS_REPORTS"
@@ -121,7 +122,8 @@ while [ $# -gt 0 ]; do
     --all-queued) ALL_QUEUED=1 ;;
     --all-in-flight) ALL_IN_FLIGHT=1 ;;
     --all-decisions) ALL_DECISIONS=1 ;;
-    --all-landed) ALL_LANDED=1 ;;    --all-recorded-prs) ALL_RECORDED_PRS=1 ;;
+    --all-landed) ALL_LANDED=1 ;;
+    --all-recorded-prs) ALL_RECORDED_PRS=1 ;;
     --all-unhealthy) ALL_UNHEALTHY=1 ;;
     --all-pr-repos) ALL_PR_REPOS=1 ;;
     --fields) shift; FIELDS=${1:-} ;;
@@ -139,7 +141,6 @@ if [ "$ALL_LANDED" = 1 ]; then
 else
   SNAP=$("$FLEET" --json) || exit $?
 fi
-SNAP=$("$FLEET" --json) || exit $?
 HOME_LABEL=$(printf '%s' "$SNAP" | jq -er '.fm_home | strings | split("/") | (.[-2:] | join("/"))') \
   || { echo "fm-bearings-snapshot: invalid canonical snapshot" >&2; exit 1; }
 NOW=${FM_BEARINGS_NOW:-$(date -u +%Y-%m-%dT%H:%M:%SZ)}
@@ -258,7 +259,8 @@ MODEL=$(printf '%s' "$SNAP" | jq \
   --argjson include_prs "$INCLUDE_PRS" \
   --argjson all_in_flight "$ALL_IN_FLIGHT" \
   --argjson all_decisions "$ALL_DECISIONS" \
-  --argjson all_landed "$ALL_LANDED" \  --argjson all_reports "$ALL_REPORTS" \
+  --argjson all_landed "$ALL_LANDED" \
+  --argjson all_reports "$ALL_REPORTS" \
   --argjson all_queued "$ALL_QUEUED" \
   --argjson all_recorded_prs "$ALL_RECORDED_PRS" \
   --argjson all_unhealthy "$ALL_UNHEALTHY" \
@@ -284,7 +286,6 @@ MODEL=$(printf '%s' "$SNAP" | jq \
   | ([ $all_landed_rows | group_by(.home_id)[] | select(length > $landed_per_home_n) ] | length) as $home_cap_dropped
   | ($per_home_capped | sort_by([(.completion.date // ""), .id]) | reverse) as $landed_sorted
   | (if $all_landed == 1 then $landed_sorted else $landed_sorted[:$landed_n] end) as $done
-  | ([ .backlog.records[] | select(.state == "done" and .structured) ][:$landed_n]) as $done
   | ($done | map(.id)) as $done_ids
   | (.tasks | map(.id)) as $live_ids
   | ($live_ids + $done_ids) as $rel_ids

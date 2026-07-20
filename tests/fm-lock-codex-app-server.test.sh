@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
-# Regression test: the shared Codex desktop app-server is not a Firstmate session.
+# Regression test: the shared Codex desktop app-server is the stable process
+# that owns the Firstmate session for Codex Desktop tool calls.
 set -u
 
 . "$(dirname "${BASH_SOURCE[0]}")/lib.sh"
@@ -21,6 +22,6 @@ SH
 chmod +x "$fakebin/ps"
 
 out=$(FM_HOME="$home" PATH="$fakebin:$PATH" "$ROOT/bin/fm-lock.sh" status)
-assert_contains "$out" "lock: stale (pid $$ dead or not a harness)" \
-  "fm-lock treated the shared Codex app-server as a live Firstmate harness"
-pass "fm-lock rejects the shared Codex app-server as a Firstmate holder"
+assert_contains "$out" "lock: held by live harness pid $$" \
+  "fm-lock did not retain the shared Codex app-server as the stable holder"
+pass "fm-lock recognizes the shared Codex app-server as the Firstmate holder"

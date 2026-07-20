@@ -13,6 +13,7 @@ STATE="${FM_STATE_OVERRIDE:-$FM_HOME/state}"
 WATCH="${FM_KEEPER_WATCH_COMMAND:-$SCRIPT_DIR/fm-watch-arm.sh}"
 DAEMON="${FM_KEEPER_DAEMON_COMMAND:-$SCRIPT_DIR/fm-supervise-daemon.sh}"
 POLL="${FM_KEEPER_POLL:-5}"
+STARTUP_GRACE="${FM_KEEPER_STARTUP_GRACE:-15}"
 MAX_BACKOFF="${FM_KEEPER_MAX_BACKOFF:-60}"
 MAX_RESTARTS="${FM_KEEPER_MAX_RESTARTS:-0}" # 0 = unlimited in normal mode
 LOG="$STATE/.supervision-keeper.log"
@@ -20,6 +21,7 @@ LOCK="$STATE/.supervision-keeper.lock"
 PIDFILE="$STATE/.supervision-keeper.pid"
 BEAT="$STATE/.supervision-keeper-beat"
 WATCHER_PID=""
+WATCHER_STARTED_AT=0
 DAEMON_PID=""
 CHILD_OUT=""
 CHILD_ERR=""
@@ -48,6 +50,15 @@ fm_keeper_backoff() {
 fm_keeper_watcher_healthy() {
   local watch_path="${1:-$SCRIPT_DIR/fm-watch.sh}" grace="${2:-${FM_GUARD_GRACE:-300}}"
   fm_watcher_healthy "$STATE" "$watch_path" "$grace" "$FM_HOME"
+}
+
+fm_keeper_watcher_needs_restart() {
+  local now age
+  fm_pid_alive "$WATCHER_PID" || return 1
+  now=$(date +%s)
+  age=$((now - WATCHER_STARTED_AT))
+  [ "$age" -ge "$STARTUP_GRACE" ] || return 1
+  ! fm_keeper_watcher_healthy
 }
 
 fm_keeper_pid_is_self() {
@@ -104,6 +115,7 @@ fm_keeper_start_watcher() {
   CHILD_ERR="$CHILD_OUT.err"
   "$WATCH" >"$CHILD_OUT" 2>"$CHILD_ERR" &
   WATCHER_PID=$!
+  WATCHER_STARTED_AT=$(date +%s)
   fm_keeper_log "watcher started pid=$WATCHER_PID command=$WATCH"
 }
 
@@ -125,7 +137,7 @@ fm_keeper_reap_watcher() {
   reason=$(cat "$CHILD_OUT" 2>/dev/null || true)
   fm_keeper_log "watcher exited rc=$rc reason=$(printf '%s' "$reason" | tr '\n' ' ')"
   rm -f "$CHILD_OUT" "$CHILD_ERR" 2>/dev/null || true
-  CHILD_OUT=""; CHILD_ERR=""; WATCHER_PID=""
+  CHILD_OUT=""; CHILD_ERR=""; WATCHER_PID=""; WATCHER_STARTED_AT=0
   RESTARTS=$((RESTARTS + 1))
   if [ "${FM_KEEPER_TEST_MODE:-0}" = 1 ] && [ "$MAX_RESTARTS" -gt 0 ] && [ "$RESTARTS" -gt "$MAX_RESTARTS" ]; then
     fm_keeper_log "test mode stopping after $RESTARTS watcher starts"
@@ -170,6 +182,12 @@ fm_keeper_main() {
       fm_keeper_start_watcher || { fm_keeper_log "watcher start failed; retrying"; sleep "$BACKOFF"; continue; }
       BACKOFF=1
     elif ! fm_pid_alive "$WATCHER_PID"; then
+      fm_keeper_reap_watcher
+      local reap_rc=$?
+      [ "$reap_rc" -eq 2 ] && return 0
+    elif fm_keeper_watcher_needs_restart; then
+      fm_keeper_log "watcher unhealthy; restarting owned child pid=$WATCHER_PID after startup_grace=${STARTUP_GRACE}s"
+      fm_keeper_stop_child "$WATCHER_PID"
       fm_keeper_reap_watcher
       local reap_rc=$?
       [ "$reap_rc" -eq 2 ] && return 0
