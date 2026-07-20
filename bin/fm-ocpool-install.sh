@@ -2,9 +2,14 @@
 # fm-ocpool-install.sh - install or remove the macOS launchd boundary for the
 # Firstmate opencode worker-pool loop (bin/fm-ocpool.sh), cloned from
 # bin/fm-supervision-keeper-install.sh's plist shape. The keeper runs
-# `fm-ocpool.sh start`; the loop is inert until `fm-ocpool.sh arm` writes
-# state/.ocpool-armed, so installing the keeper never enables mutating
-# dispatch by itself - see docs/ocpool.md for the arming ceremony.
+# `fm-ocpool.sh _loop` directly, NOT `start`: launchd (KeepAlive +
+# ThrottleInterval) is already the process supervisor here, so the tmux
+# wrapper `start` would use is redundant - `_loop` is the same loop minus that
+# wrapper, and is the correct direct entrypoint for any external supervisor
+# (launchd here, an ECS task definition in a container). The loop is inert
+# until `fm-ocpool.sh arm` writes state/.ocpool-armed, so installing the
+# keeper never enables mutating dispatch by itself - see docs/ocpool.md for
+# the arming ceremony.
 #
 # usage:
 #   fm-ocpool-install.sh install                # bootstrap the launchd job
@@ -29,7 +34,7 @@ render_plist() {
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0"><dict>
   <key>Label</key><string>$LABEL</string>
-  <key>ProgramArguments</key><array><string>/bin/bash</string><string>$SCRIPT_DIR/fm-ocpool.sh</string><string>start</string></array>
+  <key>ProgramArguments</key><array><string>/bin/bash</string><string>$SCRIPT_DIR/fm-ocpool.sh</string><string>_loop</string></array>
   <key>WorkingDirectory</key><string>$ROOT</string>
   <key>EnvironmentVariables</key><dict>
     <key>FM_HOME</key><string>$FM_HOME</string>

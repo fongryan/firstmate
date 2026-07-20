@@ -13,80 +13,107 @@
 # no pane, admitted through flowstate's resource-guardian in ENFORCE mode
 # (the single capacity authority for the guardian's own process-count cap;
 # this loop's own FM_OCPOOL_MAX_CONCURRENT is a distinct, smaller cap counted
-# from durable lifecycle state). It reuses the existing queue
-# (data/backlog.md via tasks-axi), the existing closed-loop lifecycle ledger
-# (bin/fm-lifecycle.sh) for state truth, and the existing lock primitives
-# (bin/fm-wake-lib.sh) - it does not reimplement any of them.
+# from durable lifecycle state). It reuses the existing queue (data/backlog.md
+# via tasks-axi), the existing closed-loop lifecycle ledger (bin/fm-lifecycle.sh)
+# for state truth - it does not reimplement any of them.
 #
 # QUEUE MARKER: a backlog item opts into this pool by carrying a
 # "(pool: opencode)" parenthetical field, the same bracket-field convention
 # fm-autopilot.sh already uses for (repo: ...)/(kind: ...)/(priority: ...).
-# fm-autopilot.sh's own field parser only recognizes repo/kind/priority, so a
-# pool-marked item is invisible to it as a marker - but fm-autopilot.sh would
-# still try to dispatch ANY "- [ ] ..." row it finds under "## Queued"
-# regardless of this marker. This loop closes that race the same way
-# fm-autopilot.sh's own parser already understands: the instant a pool item is
-# claimed, its checkbox line is flipped from "- [ ] " to "- [~] " IN PLACE
-# (still inside "## Queued"), which is the exact "already in flight, skip it"
-# signal fm-autopilot.sh's parse_queued/tick loop already honors
-# (`[ "$status" = " " ] || continue`). No fm-autopilot.sh change was needed or
-# made. A residual race remains only for the brief window between a pool item
-# appearing in Queued and this loop's next tick claiming it; keep pool-eligible
-# projects out of fm-autopilot.sh's own dispatch path when that window matters
-# (see docs/ocpool.md).
+# NOT "(kind: ocpool)": fm-autopilot.sh's dispatch_item() only branches on
+# kind to decide whether to pass --scout (`[ "$kind" = scout ] && args+=(--scout)`);
+# every other kind value, including "ocpool", is dispatched as an ordinary
+# ship task via fm-spawn.sh. A `(kind: ocpool)` marker would therefore NOT be
+# ignored by fm-autopilot.sh - it would get dispatched through the crew
+# harness path too. "pool" is a field name fm-autopilot.sh's field() extractor
+# never queries at all, so it is provably ignored. No fm-autopilot.sh change
+# was needed or made.
 #
-# LIFECYCLE, three orthogonal gates, all fail-closed - every entrypoint below
-# refuses to mutate until all three allow it:
-#   1. ARMED     - ships DISARMED. `arm` writes state/.ocpool-armed. The loop
+# COEXISTENCE RACE: fm-autopilot.sh's own tick still scans every row under
+# "## Queued" regardless of this marker, and nothing here changes that. This
+# loop closes the double-dispatch hole by claiming through `tasks-axi start`,
+# which physically MOVES the item out of "## Queued" into "## In flight" -
+# fm-autopilot.sh's parse_queued only scans the Queued section
+# (`inq = ($0 ~ /^## Queued/)`), so a claimed item is invisible to it, not
+# merely deprioritized. A residual race remains only for the brief window
+# between a pool item first appearing in Queued and this loop's next tick
+# claiming it (see docs/ocpool.md).
+#
+# LOCK MODEL: this loop does NOT use the shared fleet lock (state/.lock) that
+# fm-autopilot.sh and an interactive captain session contend over. It is
+# subordinate gruntwork dispatch, not captain-acting on the fleet, so it runs
+# even while an interactive session is live - fm-autopilot.sh's
+# stand-down-for-the-captain rule deliberately does not apply here. It has its
+# own private lock, state/.ocpool.lock + state/.ocpool.owns-lock, a literal
+# copy of fm-autopilot.sh's acquire_fleet_lock/release_fleet_lock/
+# lock_held_by_other trio (fm-autopilot.sh:230-247) on renamed paths; the same
+# trio doubles as this loop's singleton guard, since only one fm-ocpool.sh
+# process can hold state/.ocpool.lock at a time. The one way a captain pauses
+# it explicitly is state/.ocpool-preempt (`touch`/`rm`), checked first in
+# every tick, mirroring fm-autopilot.sh's own preempt flag shape.
+#
+# GATES, all fail-closed, checked in this order every tick - preempt, armed,
+# kill, own-lock (mirrors fm-autopilot.sh:690-753):
+#   1. PREEMPT   - state/.ocpool-preempt present -> release the own lock and
+#                  stand by immediately.
+#   2. ARMED     - ships DISARMED. `arm` writes state/.ocpool-armed. The loop
 #                  refuses every mutating action unless armed.
-#   2. KILL      - state/.ocpool-kill, checked every tick. Present = no
+#   3. KILL      - state/.ocpool-kill, checked every tick. Present = no
 #                  mutating action this or any tick until removed.
-#   3. LOCK      - a mutating tick runs only when this loop holds the shared
-#                  fleet lock (state/.lock) and no other live session holds
-#                  it. This is the SAME fleet lock fm-autopilot.sh uses and
-#                  the SAME preemption contract docs/autopilot.md and
-#                  docs/autopilot-arming.md describe: a starting interactive
-#                  fm-session-start.sh treats this loop's non-harness pid as
-#                  stale and preempts it automatically, so an interactive
-#                  captain session always outranks BOTH automated loops. This
-#                  loop and fm-autopilot.sh each record their own ownership
-#                  (state/.ocpool-owns-lock vs state/.autopilot-owns-lock), so
-#                  they peacefully alternate brief per-tick holds of the same
-#                  lock rather than fighting over it.
-# A separate SINGLETON lock (state/.ocpool-singleton.lock, via
-# bin/fm-wake-lib.sh's fm_lock_try_acquire/fm_lock_release primitives - never
-# a hand-rolled mkdir loop) is orthogonal to all three: it only prevents two
-# fm-ocpool.sh processes (e.g. a stray `once` and a running `start` loop) from
-# running a mutating body at the same moment. It says nothing about captain
-# precedence; the fleet lock above does that.
+#   4. OWN LOCK  - a mutating tick runs only when this loop holds
+#                  state/.ocpool.lock (acquired fresh each tick; held across
+#                  the sleep interval until released by preempt, a one-shot
+#                  `once`, or process exit).
 #
-# CAPACITY: free slots = FM_OCPOOL_MAX_CONCURRENT minus active pool tasks,
-# counted by reading each in-flight task's `state=` field out of its
-# bin/fm-lifecycle.sh ledger file (never from `ps`, never from a private
-# duplicate ledger). A small marker file per claimed key
-# (state/.ocpool-attempt-<key>) records which lifecycle id to read; that
-# marker is the "gate/marker touch-file" this loop is allowed to keep, not a
-# second source of truth. FM_OCPOOL_MAX_ACTIVE_AGENTS is a SEPARATE, larger
-# cap forwarded to the bridge as FLOWSTATE_RESOURCE_GUARD_MAX_ACTIVE_AGENTS -
-# flowstate's resource-guardian in ENFORCE mode is the single authority for
-# that one; this loop never second-guesses a guardian admission refusal.
+# SAFETY GUARDS (ported from fm-autopilot.sh's dispatch_item(),
+# fm-autopilot.sh:441-487, non-negotiable - a pool without these reopens a
+# closed safety hole): the same destructive/security-sensitive text guard
+# (DANGER_RE) and the same excluded-project hard exclusion, reusing
+# FM_AUTOPILOT_EXCLUDE_PROJECTS (default armalo-fi,poly-sdk) so one captain
+# configuration covers both loops.
+#
+# CAPACITY: free slots = FM_OCPOOL_MAX_CONCURRENT minus active pool tasks.
+# Mirrors fm-autopilot.sh's count_active_crew() (fm-autopilot.sh:370-388):
+# scan state/*.meta, filter kind=ocpool-worker (written by this loop at
+# dispatch, the same state/<id>.meta convention every other Firstmate direct
+# report uses), and for each meta whose recorded lifecycle_id has
+# `state=active` in its bin/fm-lifecycle.sh ledger file, count it - never via
+# `ps`, never via a private duplicate ledger. Known cross-system caveat: see
+# docs/ocpool.md "Known limitations" for the fm-autopilot.sh capacity
+# interaction this introduces. FM_OCPOOL_MAX_ACTIVE_AGENTS is a SEPARATE,
+# larger cap forwarded to the bridge as
+# FLOWSTATE_RESOURCE_GUARD_MAX_ACTIVE_AGENTS - flowstate's resource-guardian
+# in ENFORCE mode is the single authority for that one; this loop never
+# second-guesses a guardian admission refusal.
+#
+# BACKLOG MUTATION: exclusively through tasks-axi ops (`start`, `reopen`,
+# `done`), gated on bin/fm-tasks-axi-lib.sh's fm_tasks_axi_backend_available -
+# never a raw sed/awk hand-edit. When the backend is unavailable (tasks-axi
+# missing/incompatible, or config/backlog-backend=manual), this loop refuses
+# to dispatch rather than hand-edit data/backlog.md itself. See docs/ocpool.md
+# for the captain-concurrency caveat this implies.
 #
 # BRIDGE EXIT-CODE CONTRACT (bin/fm-ocpool-dispatch.mjs, run once per attempt,
-# in the background, stdout+stderr captured to data/ocpool/<key>.log):
+# in the background; stdout captured to data/ocpool/<key>.receipt.json - the
+# bridge's own printed receipt JSON - stderr to data/ocpool/<key>.log):
 #   0  verified        -> lifecycle closeout(completed), backlog item moved to
-#                          Done (tasks-axi when available/compatible, else a
-#                          hand-edit fallback), receipt line.
+#                          Done via `tasks-axi done`, receipt line.
 #   2  blocked         -> machine admission refused (not this task's fault).
-#                          Backlog item unclaimed back to "- [ ] " so it is
-#                          re-picked next tick; does NOT consume an attempt;
-#                          receipt line names the reason.
+#                          Backlog item requeued via `tasks-axi reopen`; does
+#                          NOT consume an attempt; receipt line names the
+#                          reason.
 #   3/4 failed         -> attempts < FM_OCPOOL_MAX_ATTEMPTS (default 2):
-#                          unclaimed for a retry, with a handoff note appended
-#                          to the task's brief. Attempts exhausted: escalated
-#                          to data/ocpool/needs-captain.md, left claimed so
-#                          nothing silently retries it forever.
+#                          requeued via `tasks-axi reopen` for a retry, with a
+#                          handoff note appended to the task's brief. Attempts
+#                          exhausted: escalated to data/ocpool/needs-captain.md,
+#                          left claimed so nothing silently retries it forever.
 #   5  config bug      -> escalated to needs-captain.md immediately, no retry.
 #   anything else      -> treated as a failed attempt (conservative).
+# heartbeat: every tick, this loop calls `bin/fm-lifecycle.sh heartbeat
+# <attempt-id> --owner ocpool` for every still-running attempt (its exit
+# marker not yet present) so the ledger's heartbeat never goes stale while the
+# bridge process is genuinely alive; a task already at a terminal lifecycle
+# state is never heartbeat (fm-lifecycle.sh itself refuses that).
 #
 # RECEIPTS: one line per mutating action appended to data/ocpool/log.md
 # (timestamp, action, target, detail), mirroring fm-autopilot.sh's receipt
@@ -94,18 +121,18 @@
 # state/.ocpool-heartbeat is touched every tick, armed or not.
 #
 # ENV KNOBS (all optional):
-#   FM_OCPOOL_TICK_SECONDS         loop cadence seconds (default 60)
+#   FM_OCPOOL_TICK_SECS            loop cadence seconds (default 60)
 #   FM_OCPOOL_MAX_CONCURRENT       max active pool tasks before dispatch stops (default 3)
 #   FM_OCPOOL_MAX_ATTEMPTS         max attempts per task before needs-captain (default 2)
 #   FM_OCPOOL_MAX_ACTIVE_AGENTS    forwarded to the bridge as FLOWSTATE_RESOURCE_GUARD_MAX_ACTIVE_AGENTS (default 5)
-#   FM_OCPOOL_DONE_KEEP            Done-section prune target for the hand-edit fallback (default 10)
+#   FM_AUTOPILOT_EXCLUDE_PROJECTS  shared with fm-autopilot.sh; never-touch projects (default "armalo-fi,poly-sdk")
 #   FM_OCPOOL_DISPATCH_BIN         the bridge command to exec (default $FM_ROOT/bin/fm-ocpool-dispatch.mjs)
 #   FM_OCPOOL_SESSION              tmux session name for start/stop (default "fm-ocpool")
 #   FLOWSTATE_ROOT / FM_FLOWSTATE_ROOT   passed through unchanged to the bridge when set in this loop's own environment
 #
 # SUBCOMMANDS: start | stop | status | once | arm | disarm
 #   start    launch the loop as a detached tmux session
-#   stop     kill the loop session and release the fleet + singleton locks
+#   stop     kill the loop session and release the own lock
 #   status   print ARMED/KILL/lock/queue-depth/active-count one-liners
 #   once     run exactly one tick in the foreground and exit (tests; a
 #            captain who wants to watch a single supervised pass)
@@ -126,28 +153,28 @@ DATA="${FM_DATA_OVERRIDE:-$FM_HOME/data}"
 CONFIG="${FM_CONFIG_OVERRIDE:-$FM_HOME/config}"
 PROJECTS="${FM_PROJECTS_OVERRIDE:-$FM_HOME/projects}"
 
-# shellcheck source=bin/fm-wake-lib.sh
-. "$SCRIPT_DIR/fm-wake-lib.sh"
 # shellcheck source=bin/fm-tasks-axi-lib.sh
 . "$SCRIPT_DIR/fm-tasks-axi-lib.sh"
 
 # --- tunables ---------------------------------------------------------------
-TICK_SECONDS=${FM_OCPOOL_TICK_SECONDS:-60}
+TICK_SECS=${FM_OCPOOL_TICK_SECS:-60}
 MAX_CONCURRENT=${FM_OCPOOL_MAX_CONCURRENT:-3}
 MAX_ATTEMPTS=${FM_OCPOOL_MAX_ATTEMPTS:-2}
 MAX_ACTIVE_AGENTS=${FM_OCPOOL_MAX_ACTIVE_AGENTS:-5}
-DONE_KEEP=${FM_OCPOOL_DONE_KEEP:-10}
+EXCLUDE_PROJECTS=${FM_AUTOPILOT_EXCLUDE_PROJECTS:-armalo-fi,poly-sdk}
 DISPATCH_BIN=${FM_OCPOOL_DISPATCH_BIN:-$FM_ROOT/bin/fm-ocpool-dispatch.mjs}
 SESSION=${FM_OCPOOL_SESSION:-fm-ocpool}
 LIFECYCLE_BIN="$FM_ROOT/bin/fm-lifecycle.sh"
 
+# Same destructive/security-sensitive guard as fm-autopilot.sh (fm-autopilot.sh:132).
+DANGER_RE='(--no-verify|--force|force[- ]push|rm -rf|DROP TABLE|delete .*(secret|key)|private key|credential|kill.?switch|LIVE_TRADING|autonomy.?tier|--hard\b)'
+
 # state / data paths (state/ and data/ are gitignored, so these are all local)
 ARMED_FLAG="$STATE/.ocpool-armed"
 KILL_FLAG="$STATE/.ocpool-kill"
+PREEMPT_FLAG="$STATE/.ocpool-preempt"
 HEARTBEAT="$STATE/.ocpool-heartbeat"
-OWNS_LOCK="$STATE/.ocpool-owns-lock"
-FLEET_LOCK="$STATE/.lock"
-SINGLETON_LOCK="$STATE/.ocpool-singleton.lock"
+OWN_LOCK="$STATE/.ocpool.lock"
 OC_DATA="$DATA/ocpool"
 LOG_MD="$OC_DATA/log.md"
 NEEDS_CAPTAIN_MD="$OC_DATA/needs-captain.md"
@@ -191,43 +218,67 @@ needs_captain() {  # <key> <reason> <detail>
   receipt escalate "$1" "$2"
 }
 
-# --- gates --------------------------------------------------------------
-is_armed()     { [ -f "$ARMED_FLAG" ]; }
-kill_present() { [ -e "$KILL_FLAG" ]; }
+is_excluded_project() {  # <repo>
+  local repo=$1 IFS=,
+  local ex
+  for ex in $EXCLUDE_PROJECTS; do
+    [ "$ex" = "$repo" ] && return 0
+  done
+  return 1
+}
 
-# lock_held_by_other / acquire_fleet_lock / release_fleet_lock: the SAME
-# preemption contract as bin/fm-autopilot.sh, against the SAME state/.lock,
-# using this loop's own ownership marker so the two loops alternate brief
-# holds instead of permanently locking each other out (see header comment).
+is_dangerous_text() {  # <text>
+  printf '%s' "$1" | grep -qiE "$DANGER_RE"
+}
+
+# --- gates --------------------------------------------------------------
+is_armed()        { [ -f "$ARMED_FLAG" ]; }
+kill_present()     { [ -e "$KILL_FLAG" ]; }
+preempt_present()  { [ -e "$PREEMPT_FLAG" ]; }
+
+# lock_held_by_other / acquire_own_lock / release_own_lock: this loop's own
+# private lock. Started as a literal copy of fm-autopilot.sh's
+# acquire_fleet_lock/release_fleet_lock/lock_held_by_other trio
+# (fm-autopilot.sh:230-247), but that trio's pid==owner "we hold it" check
+# only works when the lock has two DISTINCT classes of writer (autopilot vs.
+# an interactive captain session touching the shared state/.lock) - autopilot
+# never writes state/.autopilot-owns-lock for a foreign holder, so pid==owner
+# there really does mean "the current holder is autopilot itself". This
+# loop's private lock has exactly one writer class (fm-ocpool.sh itself), so
+# whichever ocpool process most recently acquired it wrote the SAME pid to
+# both a lock file and a second "owner" file; a literal copy of the trio would
+# make pid==owner true for ANY live holder, self or other, and a second
+# concurrent ocpool process would wrongly conclude "we hold it" and steal the
+# lock out from under a live first process. Verified by
+# tests/fm-ocpool.test.sh's own-lock test before this fix landed. Compare
+# directly against this process's own $$ instead - correct for a
+# single-writer-class lock, and the same pattern bin/fm-lifecycle.sh's own
+# acquire_lock() uses (a bare pid file, no owner indirection).
 lock_held_by_other() {
-  [ -f "$FLEET_LOCK" ] || return 1
-  local pid owner
-  pid=$(cat "$FLEET_LOCK" 2>/dev/null || true)
-  owner=$(cat "$OWNS_LOCK" 2>/dev/null || true)
+  [ -f "$OWN_LOCK" ] || return 1
+  local pid
+  pid=$(cat "$OWN_LOCK" 2>/dev/null || true)
   [ -n "$pid" ] || return 1
-  [ "$pid" = "$owner" ] && return 1   # we hold it
+  [ "$pid" = "$$" ] && return 1   # this exact process already holds it
   pid_alive "$pid"
 }
 
-acquire_fleet_lock() {
+acquire_own_lock() {
   lock_held_by_other && return 1
-  printf '%s\n' "$$" > "$FLEET_LOCK"
-  printf '%s\n' "$$" > "$OWNS_LOCK"
+  printf '%s\n' "$$" > "$OWN_LOCK"
   return 0
 }
 
-release_fleet_lock() {
-  local owner
-  owner=$(cat "$OWNS_LOCK" 2>/dev/null || true)
-  if [ -f "$FLEET_LOCK" ]; then
-    local pid; pid=$(cat "$FLEET_LOCK" 2>/dev/null || true)
-    [ "$pid" = "$owner" ] && rm -f "$FLEET_LOCK" 2>/dev/null || true
-  fi
-  rm -f "$OWNS_LOCK" 2>/dev/null || true
+release_own_lock() {
+  local pid
+  pid=$(cat "$OWN_LOCK" 2>/dev/null || true)
+  [ "$pid" = "$$" ] && rm -f "$OWN_LOCK" 2>/dev/null || true
 }
 
-# --- backlog parsing (mirrors bin/fm-autopilot.sh's parse_queued, plus a
-# pool-marker filter fm-autopilot.sh's own parser is blind to) ---------------
+# --- backlog parsing: a literal copy of fm-autopilot.sh's parse_queued()
+# (fm-autopilot.sh:339-364), plus a pool-marker filter fm-autopilot.sh's own
+# parser is blind to. Row shape and sort key match fm-autopilot.sh's own
+# (status, key, repo, kind, priority, text). ---------------------------------
 parse_pool_queued() {
   local backlog="$DATA/backlog.md"
   [ -f "$backlog" ] || return 0
@@ -249,9 +300,10 @@ parse_pool_queued() {
       rest = substr($0, 7)
       key = rest; sub(/ .*/, "", key)
       repo = field($0, "repo")
+      kind = field($0, "kind")
       prio = field($0, "priority")
       if (prio == "" || prio ~ /[^0-9]/) prio = 9999
-      printf "%s\t%s\t%s\t%s\t%s\n", status, key, repo, prio, $0
+      printf "%s\t%s\t%s\t%s\t%s\t%s\n", status, key, repo, kind, prio, $0
     }
   ' "$backlog"
 }
@@ -260,14 +312,17 @@ count_pool_queued() {  # count of unclaimed '[ ]' pool items in Queued
   parse_pool_queued | awk -F '\t' '$1==" "{n++} END{print n+0}'
 }
 
-# --- capacity: read lifecycle state, never ps --------------------------------
+# --- capacity: scan state/*.meta filtering kind=ocpool-worker, read
+# fm-lifecycle state, never ps. Mirrors fm-autopilot.sh's count_active_crew().
 count_active_pool() {
-  local f id n=0
-  for f in "$STATE"/.ocpool-attempt-*; do
+  local f kind lcid n=0
+  for f in "$STATE"/*.meta; do
     [ -f "$f" ] || continue
-    id=$(cat "$f" 2>/dev/null || true)
-    [ -n "$id" ] || continue
-    [ "$(meta_get "$STATE/$id.lifecycle" state)" = active ] && n=$((n + 1))
+    kind=$(meta_get "$f" kind)
+    [ "$kind" = ocpool-worker ] || continue
+    lcid=$(meta_get "$f" lifecycle_id)
+    [ -n "$lcid" ] || continue
+    [ "$(meta_get "$STATE/$lcid.lifecycle" state)" = active ] && n=$((n + 1))
   done
   echo "$n"
 }
@@ -294,115 +349,23 @@ bump_retry() {  # <key>
   echo "$n"
 }
 
-# --- backlog mutation: claim/unclaim in place (mirrors fm-autopilot.sh's
-# own "[~] means already in flight" reading), and a Done-section mover used
-# only when the tasks-axi backend is unavailable/manual. -----------------
-pool_claim_item() {  # <key>
-  local key=$1 backlog="$DATA/backlog.md" tmp
-  [ -f "$backlog" ] || return 1
-  tmp=$(mktemp "$STATE/.ocpool-backlog.XXXXXX") || return 1
-  awk -v key="$key" '
-    BEGIN { done = 0 }
-    !done && $0 ~ ("^- \\[ \\] " key "([[:space:]]|$)") { sub(/^- \[ \]/, "- [~]"); done = 1 }
-    { print }
-  ' "$backlog" > "$tmp" && mv "$tmp" "$backlog"
+# --- backlog mutation: exclusively via tasks-axi ops, never a raw hand-edit.
+# tasks_axi_ready gates every mutating call; a caller that cannot mutate
+# escalates instead of falling back to sed/awk. -----------------------------
+tasks_axi_ready() {
+  fm_tasks_axi_backend_available "$CONFIG" && command -v tasks-axi >/dev/null 2>&1
 }
 
-pool_unclaim_item() {  # <key>
-  local key=$1 backlog="$DATA/backlog.md" tmp
-  [ -f "$backlog" ] || return 1
-  tmp=$(mktemp "$STATE/.ocpool-backlog.XXXXXX") || return 1
-  awk -v key="$key" '
-    BEGIN { done = 0 }
-    !done && $0 ~ ("^- \\[~\\] " key "([[:space:]]|$)") { sub(/^- \[~\]/, "- [ ]"); done = 1 }
-    { print }
-  ' "$backlog" > "$tmp" && mv "$tmp" "$backlog"
+pool_backlog_start() {  # <key>: Queued -> In flight (tasks-axi start, idempotent)
+  ( cd "$FM_HOME" 2>/dev/null && tasks-axi start "$1" ) >/dev/null 2>&1
 }
 
-_ocpool_prune_done() {  # <file> <keep>
-  local file=$1 keep=$2 tmp
-  [ -f "$file" ] || return 0
-  tmp=$(mktemp "$STATE/.ocpool-prune.XXXXXX") || return 0
-  awk -v keep="$keep" '
-    BEGIN { insection = 0; count = 0; keepit = 1 }
-    /^## / {
-      insection = ($0 ~ /^## Done([[:space:]]|$)/)
-      print
-      next
-    }
-    insection && /^- \[x\] / {
-      count++
-      keepit = (count <= keep)
-      if (keepit) print
-      next
-    }
-    insection && /^[[:space:]]/ {
-      if (keepit) print
-      next
-    }
-    { print }
-  ' "$file" > "$tmp" && mv "$tmp" "$file"
+pool_backlog_reopen() {  # <key>: In flight/Done -> Queued (tasks-axi reopen, idempotent)
+  ( cd "$FM_HOME" 2>/dev/null && tasks-axi reopen "$1" ) >/dev/null 2>&1
 }
 
-# pool_backlog_done_manual <key> <note>: move the item (wherever it currently
-# sits, claimed or not) to the "## Done" section, checked, dated, with <note>
-# as an indented continuation line, then prune Done to FM_OCPOOL_DONE_KEEP.
-# Used only when fm_tasks_axi_backend_available reports the tasks-axi CLI
-# path is unavailable or config/backlog-backend=manual.
-pool_backlog_done_manual() {  # <key> <note>
-  local key=$1 note=$2 backlog="$DATA/backlog.md" date item rest tmp
-  [ -f "$backlog" ] || return 1
-  date=$(date +%Y-%m-%d)
-  item=$(mktemp "$STATE/.ocpool-done-item.XXXXXX") || return 1
-  rest=$(mktemp "$STATE/.ocpool-done-rest.XXXXXX") || { rm -f "$item"; return 1; }
-  awk -v key="$key" -v itemfile="$item" -v restfile="$rest" '
-    {
-      if (initem) {
-        if ($0 ~ /^[[:space:]]/) { print >> itemfile; next }
-        initem = 0
-      }
-      if (!found && $0 ~ ("^- \\[[ ~]\\] " key "([[:space:]]|$)")) {
-        sub(/^- \[[ ~]\]/, "- [x]")
-        print >> itemfile
-        initem = 1
-        found = 1
-        next
-      }
-      print >> restfile
-    }
-  ' "$backlog"
-  if [ ! -s "$item" ]; then
-    rm -f "$item" "$rest"
-    return 1
-  fi
-  { sed "1 s/\$/ (done $date)/" "$item"; printf '  %s\n' "$note"; } > "$item.final"
-
-  tmp=$(mktemp "$STATE/.ocpool-backlog.XXXXXX") || { rm -f "$item" "$item.final" "$rest"; return 1; }
-  if grep -q '^## Done' "$rest"; then
-    awk -v itemfile="$item.final" '
-      { print }
-      /^## Done/ && !inserted {
-        while ((getline line < itemfile) > 0) print line
-        inserted = 1
-      }
-    ' "$rest" > "$tmp"
-  else
-    cat "$rest" > "$tmp"
-    { printf '\n## Done\n'; cat "$item.final"; } >> "$tmp"
-  fi
-  mv "$tmp" "$backlog"
-  rm -f "$item" "$item.final" "$rest"
-  _ocpool_prune_done "$backlog" "$DONE_KEEP"
-}
-
-pool_backlog_done() {  # <key> <note>: tasks-axi when available, else hand-edit
-  local key=$1 note=$2
-  if fm_tasks_axi_backend_available "$CONFIG" && command -v tasks-axi >/dev/null 2>&1; then
-    if ( cd "$FM_HOME" 2>/dev/null && tasks-axi "done" "$key" --note "$note" ) >/dev/null 2>&1; then
-      return 0
-    fi
-  fi
-  pool_backlog_done_manual "$key" "$note"
+pool_backlog_done() {  # <key> <note>: -> Done (tasks-axi done)
+  ( cd "$FM_HOME" 2>/dev/null && tasks-axi "done" "$1" --note "$2" ) >/dev/null 2>&1
 }
 
 # --- brief scaffold -----------------------------------------------------
@@ -433,7 +396,7 @@ append_handoff_note() {  # <key> <note>
 
 # --- dispatch -------------------------------------------------------------
 dispatch_pool_item() {  # <key> <repo> <text>
-  local key=$1 repo=$2 text=$3 n attempt aid depth brief log
+  local key=$1 repo=$2 text=$3 n attempt aid depth brief rcpt log proj
 
   n=$(retry_count "$key")
   attempt=$((n + 1))
@@ -445,11 +408,22 @@ dispatch_pool_item() {  # <key> <repo> <text>
   # is never permanently locked out.
   once_marker "dispatch" "$aid" || return 1
 
+  # The four guards below mirror fm-autopilot.sh's dispatch_item() exactly
+  # (fm-autopilot.sh:441-487): no-repo and destructive-text escalate, an
+  # excluded project is a hard skip (receipt only, no escalation).
   if [ -z "$repo" ]; then
-    needs_captain "$key" "no-repo" "pool item has no (repo: ...) - cannot dispatch autonomously"
+    once_marker norepo "$key" && needs_captain "$key" "no-repo" "pool item has no (repo: ...) - cannot dispatch autonomously"
     return 1
   fi
-  local proj="$PROJECTS/$repo"
+  if is_excluded_project "$repo"; then
+    once_marker skipdispatch "$key" && receipt skip-dispatch "$key" "excluded project $repo (hard exclusion)"
+    return 1
+  fi
+  if is_dangerous_text "$text"; then
+    once_marker danger "$key" && needs_captain "$key" "destructive/security-sensitive" "matched danger guard; not auto-dispatched"
+    return 1
+  fi
+  proj="$PROJECTS/$repo"
   if [ ! -d "$proj" ]; then
     needs_captain "$key" "missing-clone" "no project clone at $proj"
     return 1
@@ -461,19 +435,28 @@ dispatch_pool_item() {  # <key> <repo> <text>
     return 1
   fi
 
+  if ! tasks_axi_ready; then
+    needs_captain "$key" "tasks-axi-unavailable" "backlog backend unavailable/manual; refusing to hand-edit data/backlog.md"
+    return 1
+  fi
+  if ! pool_backlog_start "$key"; then
+    needs_captain "$key" "backlog-start-failed" "tasks-axi start $key failed"
+    return 1
+  fi
+
   ensure_pool_brief "$key" "$text"
   brief="$DATA/$key/brief.md"
+  rcpt="$OC_DATA/$key.receipt.json"
   log="$OC_DATA/$key.log"
   mkdir -p "$OC_DATA" 2>/dev/null || true
 
   "$LIFECYCLE_BIN" register "$aid" --repo "$repo" --owner ocpool \
     --branch "opencode-pool/$key" --worktree "$proj" --objective "$text" >/dev/null 2>&1 \
-    || { needs_captain "$key" "lifecycle-register-failed" "attempt=$aid"; return 1; }
-  "$LIFECYCLE_BIN" transition "$aid" active --reason dispatch --evidence "$log" >/dev/null 2>&1 \
-    || { needs_captain "$key" "lifecycle-transition-failed" "attempt=$aid"; return 1; }
+    || { pool_backlog_reopen "$key"; needs_captain "$key" "lifecycle-register-failed" "attempt=$aid"; return 1; }
+  "$LIFECYCLE_BIN" transition "$aid" active --reason dispatch --evidence "$rcpt" >/dev/null 2>&1 \
+    || { pool_backlog_reopen "$key"; needs_captain "$key" "lifecycle-transition-failed" "attempt=$aid"; return 1; }
 
-  printf '%s\n' "$aid" > "$STATE/.ocpool-attempt-$key"
-  pool_claim_item "$key"
+  fm_write_pool_meta "$key" "$aid" "$attempt" "$repo" "$proj"
   receipt dispatch "$key" "attempt=$attempt repo=$repo"
 
   (
@@ -483,57 +466,89 @@ dispatch_pool_item() {  # <key> <repo> <text>
     [ -n "${FLOWSTATE_ROOT:-}" ] && export FLOWSTATE_ROOT
     [ -n "${FM_FLOWSTATE_ROOT:-}" ] && export FM_FLOWSTATE_ROOT
     "$DISPATCH_BIN" --task-id "$key" --repo "$proj" --prompt-file "$brief" --json \
-      >"$log" 2>&1
+      >"$rcpt" 2>"$log"
     printf '%s\n' "$?" > "$STATE/.ocpool-exit-$key"
   ) &
   disown 2>/dev/null || true
   return 0
 }
 
+# fm_write_pool_meta <key> <aid> <attempt> <repo> <proj>: the same
+# state/<id>.meta convention every other Firstmate direct report uses
+# (AGENTS.md section 2), so fleet-visibility tooling can see pool tasks too.
+# kind=ocpool-worker (not any of fm-autopilot.sh's recognized kinds) is the
+# capacity-counting filter for count_active_pool(); lifecycle_id= is the
+# pointer into bin/fm-lifecycle.sh's ledger.
+fm_write_pool_meta() {
+  local key=$1 aid=$2 attempt=$3 repo=$4 proj=$5
+  {
+    printf 'window=ocpool:%s\n' "$key"
+    printf 'kind=ocpool-worker\n'
+    printf 'project=%s\n' "$proj"
+    printf 'repo=%s\n' "$repo"
+    printf 'harness=opencode\n'
+    printf 'mode=ocpool\n'
+    printf 'yolo=off\n'
+    printf 'lifecycle_id=%s\n' "$aid"
+    printf 'attempt=%s\n' "$attempt"
+  } > "$STATE/$key.meta"
+}
+
 # --- outcome handling ------------------------------------------------------
-handle_pool_verified() {  # <key> <aid> <log>
-  local key=$1 aid=$2 log=$3
-  "$LIFECYCLE_BIN" closeout "$aid" completed --reason verified --evidence "$log" >/dev/null 2>&1 || true
-  pool_backlog_done "$key" "opencode pool: verified (log data/ocpool/$key.log)"
-  receipt "done" "$key" "attempt=$aid verified"
+handle_pool_verified() {  # <key> <aid> <rcpt> <log>
+  local key=$1 aid=$2 rcpt=$3
+  "$LIFECYCLE_BIN" closeout "$aid" completed --reason verified --evidence "$rcpt" >/dev/null 2>&1 || true
+  if pool_backlog_done "$key" "opencode pool: verified (log data/ocpool/$key.log)"; then
+    receipt "done" "$key" "attempt=$aid verified"
+  else
+    needs_captain "$key" "backlog-done-failed" "attempt=$aid verified but tasks-axi done failed; backlog needs manual update"
+  fi
 }
 
-handle_pool_blocked() {  # <key> <aid> <log>
-  local key=$1 aid=$2 log=$3 reason
+handle_pool_blocked() {  # <key> <aid> <rcpt> <log>
+  local key=$1 aid=$2 rcpt=$3 log=$4 reason
   reason=$(tail -c 2000 "$log" 2>/dev/null | tail -1)
-  "$LIFECYCLE_BIN" closeout "$aid" interrupted --reason "blocked: machine admission refused" --evidence "$log" >/dev/null 2>&1 || true
-  pool_unclaim_item "$key"
-  receipt blocked "$key" "attempt=$aid ${reason:-admission refused}"
+  "$LIFECYCLE_BIN" closeout "$aid" interrupted --reason "blocked: machine admission refused" --evidence "$rcpt" >/dev/null 2>&1 || true
+  if pool_backlog_reopen "$key"; then
+    receipt blocked "$key" "attempt=$aid ${reason:-admission refused}"
+  else
+    needs_captain "$key" "backlog-reopen-failed" "attempt=$aid blocked but tasks-axi reopen failed; backlog needs manual update"
+  fi
 }
 
-handle_pool_failed() {  # <key> <aid> <log>
-  local key=$1 aid=$2 log=$3 n reason
+handle_pool_failed() {  # <key> <aid> <rcpt> <log>
+  local key=$1 aid=$2 rcpt=$3 log=$4 n reason
   reason=$(tail -c 2000 "$log" 2>/dev/null | tail -1)
   n=$(bump_retry "$key")
   if [ "$n" -lt "$MAX_ATTEMPTS" ]; then
-    "$LIFECYCLE_BIN" closeout "$aid" interrupted --reason "failed-retry $n/$MAX_ATTEMPTS: ${reason:-non-zero exit}" --evidence "$log" >/dev/null 2>&1 || true
-    pool_unclaim_item "$key"
-    append_handoff_note "$key" "attempt $n failed: ${reason:-see data/ocpool/$key.log}"
-    receipt requeue "$key" "attempt=$aid failed, retry $n/$MAX_ATTEMPTS"
+    "$LIFECYCLE_BIN" closeout "$aid" interrupted --reason "failed-retry $n/$MAX_ATTEMPTS: ${reason:-non-zero exit}" --evidence "$rcpt" >/dev/null 2>&1 || true
+    if pool_backlog_reopen "$key"; then
+      append_handoff_note "$key" "attempt $n failed: ${reason:-see data/ocpool/$key.log}"
+      receipt requeue "$key" "attempt=$aid failed, retry $n/$MAX_ATTEMPTS"
+    else
+      needs_captain "$key" "backlog-reopen-failed" "attempt=$aid failed but tasks-axi reopen failed; backlog needs manual update"
+    fi
   else
-    "$LIFECYCLE_BIN" closeout "$aid" abandoned --reason "failed-exhausted $n/$MAX_ATTEMPTS: ${reason:-non-zero exit}" --evidence "$log" >/dev/null 2>&1 || true
+    "$LIFECYCLE_BIN" closeout "$aid" abandoned --reason "failed-exhausted $n/$MAX_ATTEMPTS: ${reason:-non-zero exit}" --evidence "$rcpt" >/dev/null 2>&1 || true
     needs_captain "$key" "failed-exhausted" "attempt=$aid $n/$MAX_ATTEMPTS attempts failed: ${reason:-see data/ocpool/$key.log}"
   fi
 }
 
-handle_pool_config_bug() {  # <key> <aid> <log>
-  local key=$1 aid=$2 log=$3 reason
+handle_pool_config_bug() {  # <key> <aid> <rcpt> <log>
+  local key=$1 aid=$2 rcpt=$3 log=$4 reason
   reason=$(tail -c 2000 "$log" 2>/dev/null | tail -1)
-  "$LIFECYCLE_BIN" closeout "$aid" abandoned --reason "config-bug: ${reason:-exit 5}" --evidence "$log" >/dev/null 2>&1 || true
+  "$LIFECYCLE_BIN" closeout "$aid" abandoned --reason "config-bug: ${reason:-exit 5}" --evidence "$rcpt" >/dev/null 2>&1 || true
   needs_captain "$key" "config-bug" "attempt=$aid bridge exited 5 (config bug): ${reason:-see data/ocpool/$key.log}"
 }
 
 triage_pool_tasks() {
-  local f key aid exitfile code log
-  for f in "$STATE"/.ocpool-attempt-*; do
+  local f key kind aid exitfile code rcpt log
+  for f in "$STATE"/*.meta; do
     [ -f "$f" ] || continue
-    key=${f#"$STATE"/.ocpool-attempt-}
-    aid=$(cat "$f" 2>/dev/null || true)
+    kind=$(meta_get "$f" kind)
+    [ "$kind" = ocpool-worker ] || continue
+    key=$(basename "$f" .meta)
+    aid=$(meta_get "$f" lifecycle_id)
     if [ -z "$aid" ]; then
       rm -f "$f"
       continue
@@ -541,16 +556,37 @@ triage_pool_tasks() {
     exitfile="$STATE/.ocpool-exit-$key"
     [ -f "$exitfile" ] || continue  # still running
     code=$(cat "$exitfile" 2>/dev/null || true)
+    rcpt="$OC_DATA/$key.receipt.json"
     log="$OC_DATA/$key.log"
-    [ -e "$log" ] || : > "$log"  # closeout requires existing evidence
+    [ -e "$rcpt" ] || : > "$rcpt"  # closeout requires existing evidence
+    [ -e "$log" ] || : > "$log"
     case "$code" in
-      0) handle_pool_verified "$key" "$aid" "$log" ;;
-      2) handle_pool_blocked "$key" "$aid" "$log" ;;
-      3|4) handle_pool_failed "$key" "$aid" "$log" ;;
-      5) handle_pool_config_bug "$key" "$aid" "$log" ;;
-      *) handle_pool_failed "$key" "$aid" "$log" ;;
+      0) handle_pool_verified "$key" "$aid" "$rcpt" "$log" ;;
+      2) handle_pool_blocked "$key" "$aid" "$rcpt" "$log" ;;
+      3|4) handle_pool_failed "$key" "$aid" "$rcpt" "$log" ;;
+      5) handle_pool_config_bug "$key" "$aid" "$rcpt" "$log" ;;
+      *) handle_pool_failed "$key" "$aid" "$rcpt" "$log" ;;
     esac
     rm -f "$f" "$exitfile" "$STATE/.ocpool-dispatch-$aid"
+  done
+}
+
+# heartbeat_active_pool_tasks: keep bin/fm-lifecycle.sh's heartbeat fresh for
+# every attempt whose bridge process is still running (no exit marker yet).
+# A task about to be triaged this same tick (exit marker present) is skipped,
+# and a task already at a terminal lifecycle state is never reached here
+# because triage_pool_tasks removes its meta the moment it goes terminal.
+heartbeat_active_pool_tasks() {
+  local f key kind aid
+  for f in "$STATE"/*.meta; do
+    [ -f "$f" ] || continue
+    kind=$(meta_get "$f" kind)
+    [ "$kind" = ocpool-worker ] || continue
+    key=$(basename "$f" .meta)
+    [ -f "$STATE/.ocpool-exit-$key" ] && continue
+    aid=$(meta_get "$f" lifecycle_id)
+    [ -n "$aid" ] || continue
+    "$LIFECYCLE_BIN" heartbeat "$aid" --owner ocpool >/dev/null 2>&1 || true
   done
 }
 
@@ -558,6 +594,11 @@ triage_pool_tasks() {
 tick() {
   touch "$HEARTBEAT" 2>/dev/null || true
 
+  if preempt_present; then
+    release_own_lock
+    log_line "standby: preempt requested (state/.ocpool-preempt present); released own lock"
+    return 0
+  fi
   if ! is_armed; then
     log_line "standby: DISARMED (no state/.ocpool-armed); run 'fm-ocpool.sh arm' to enable"
     return 0
@@ -566,30 +607,33 @@ tick() {
     log_line "standby: KILL SWITCH present (state/.ocpool-kill); no mutating action"
     return 0
   fi
-  if ! acquire_fleet_lock; then
-    local holder; holder=$(cat "$FLEET_LOCK" 2>/dev/null || true)
-    log_line "standby: fleet lock held by another live session (pid ${holder:-?})"
+  if ! acquire_own_lock; then
+    local holder; holder=$(cat "$OWN_LOCK" 2>/dev/null || true)
+    log_line "standby: own lock held by another ocpool process (pid ${holder:-?})"
     return 0
   fi
 
-  log_line "armed tick: holding fleet lock (pid $$)"
+  log_line "armed tick: holding own lock (pid $$)"
 
   triage_pool_tasks
+  heartbeat_active_pool_tasks
 
   local active free
   active=$(count_active_pool)
   free=$(( MAX_CONCURRENT - active ))
   if [ "$free" -gt 0 ]; then
-    local status key repo prio text
-    # shellcheck disable=SC2034  # prio drives the external sort key below, not the loop body
-    while IFS=$'\t' read -r status key repo prio text; do
+    local status key repo kind prio text
+    # shellcheck disable=SC2034  # kind/prio mirror fm-autopilot.sh's row shape and
+    # drive the external sort key above; kind has no ocpool-side branch (no scout
+    # analog) and prio is consumed only by the sort, not the loop body.
+    while IFS=$'\t' read -r status key repo kind prio text; do
       [ "$free" -gt 0 ] || break
       [ "$status" = " " ] || continue
       [ -n "$key" ] || continue
       if dispatch_pool_item "$key" "$repo" "$text"; then
         free=$((free - 1))
       fi
-    done < <(parse_pool_queued | sort -t"$(printf '\t')" -k4,4n -k2,2)
+    done < <(parse_pool_queued | sort -t"$(printf '\t')" -k5,5n -k2,2)
   else
     log_line "dispatch skipped: $active active >= cap $MAX_CONCURRENT"
   fi
@@ -600,12 +644,11 @@ tick() {
 # --- long-lived loop --------------------------------------------------------
 loop() {
   printf '%s\n' "$$" > "$STATE/.ocpool.pid"
-  trap 'fm_lock_release "$SINGLETON_LOCK"; release_fleet_lock; rm -f "$STATE/.ocpool.pid"; exit 0' TERM INT EXIT
-  fm_lock_acquire_wait "$SINGLETON_LOCK"
-  log_line "loop starting (pid $$, tick ${TICK_SECONDS}s)"
+  trap 'release_own_lock; rm -f "$STATE/.ocpool.pid"; exit 0' TERM INT EXIT
+  log_line "loop starting (pid $$, tick ${TICK_SECS}s)"
   while true; do
     tick || true
-    sleep "$TICK_SECONDS"
+    sleep "$TICK_SECS"
   done
 }
 
@@ -621,7 +664,7 @@ cmd_start() {
   fi
   tmux new-session -d -s "$SESSION" \
     "FM_HOME=$(printf %q "$FM_HOME") FM_ROOT_OVERRIDE=$(printf %q "$FM_ROOT") exec bash $(printf %q "$SELF") _loop"
-  echo "ocpool started in tmux session '$SESSION' (tick ${TICK_SECONDS}s)"
+  echo "ocpool started in tmux session '$SESSION' (tick ${TICK_SECS}s)"
   is_armed || echo "note: ocpool is DISARMED - run 'fm-ocpool.sh arm' to enable mutating actions"
 }
 
@@ -632,8 +675,7 @@ cmd_stop() {
   else
     echo "no ocpool tmux session '$SESSION' running"
   fi
-  fm_lock_release "$SINGLETON_LOCK"
-  release_fleet_lock
+  release_own_lock
   rm -f "$STATE/.ocpool.pid" 2>/dev/null || true
 }
 
@@ -641,14 +683,14 @@ cmd_status() {
   printf 'ocpool status @ %s\n' "$(now_iso)"
   if is_armed; then printf '  armed:      YES (%s)\n' "$(head -1 "$ARMED_FLAG" 2>/dev/null)"; else printf '  armed:      no (DISARMED)\n'; fi
   kill_present && printf '  kill:       PRESENT (mutating actions suspended)\n' || printf '  kill:       absent\n'
-  if lock_held_by_other; then
-    printf '  fleet lock: held by ANOTHER session (pid %s) - ocpool standby\n' "$(cat "$FLEET_LOCK" 2>/dev/null)"
-  elif [ -f "$OWNS_LOCK" ] && [ "$(cat "$FLEET_LOCK" 2>/dev/null || true)" = "$(cat "$OWNS_LOCK" 2>/dev/null || true)" ]; then
-    printf '  fleet lock: ocpool-owned (pid %s)\n' "$(cat "$OWNS_LOCK" 2>/dev/null)"
+  preempt_present && printf '  preempt:    PRESENT (standby requested)\n' || printf '  preempt:    absent\n'
+  # status is always a fresh, short-lived process, so it never legitimately
+  # "holds" the lock itself; report an alive holder as held, full stop.
+  if [ -f "$OWN_LOCK" ] && pid_alive "$(cat "$OWN_LOCK" 2>/dev/null || true)"; then
+    printf '  own lock:   held (pid %s)\n' "$(cat "$OWN_LOCK" 2>/dev/null)"
   else
-    printf '  fleet lock: free/stale (available)\n'
+    printf '  own lock:   free/stale (available)\n'
   fi
-  if [ -e "$SINGLETON_LOCK" ]; then printf '  singleton lock: held\n'; else printf '  singleton lock: free\n'; fi
   if [ -f "$HEARTBEAT" ]; then printf '  heartbeat:  %ss ago\n' "$(file_age "$HEARTBEAT")"; else printf '  heartbeat:  none yet\n'; fi
   if command -v tmux >/dev/null 2>&1 && tmux has-session -t "$SESSION" 2>/dev/null; then
     printf '  loop:       running (tmux session %s)\n' "$SESSION"
@@ -675,11 +717,9 @@ cmd_disarm() {
 }
 
 cmd_once() {
-  fm_lock_acquire_wait "$SINGLETON_LOCK"
   tick
-  fm_lock_release "$SINGLETON_LOCK"
-  # A one-shot pass releases the fleet lock so it never strands a dead pid marker.
-  release_fleet_lock
+  # A one-shot pass releases the own lock so it never strands a dead pid marker.
+  release_own_lock
 }
 
 main() {
@@ -692,9 +732,11 @@ main() {
     once)    cmd_once "$@" ;;
     arm)     cmd_arm "$@" ;;
     disarm)  cmd_disarm "$@" ;;
-    _loop)   loop ;;   # internal: launched by 'start' inside tmux
+    _loop)   loop ;;   # internal: launched by 'start' inside tmux, and the
+                        # correct direct entrypoint for a launchd/ECS
+                        # supervisor - see bin/fm-ocpool-install.sh.
     -h|--help|help)
-      sed -n '2,90p' "$SELF" | sed 's/^# \{0,1\}//'
+      sed -n '2,110p' "$SELF" | sed 's/^# \{0,1\}//'
       ;;
     *)
       echo "usage: fm-ocpool.sh { start | stop | status | once | arm [note] | disarm }" >&2
