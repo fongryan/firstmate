@@ -45,7 +45,7 @@
 #   (s) index.lock with a live holder, any age                -> lock kept, REFUSE
 #   (t) lsof error while checking index.lock                  -> lock kept, REFUSE
 #   (u) dirty worktree after stale lock cleanup               -> lock removed, REFUSE
-#   (v) non-linked repo index.lock                            -> lock removed, ALLOW
+#   (v) unregistered clone with index.lock                    -> preserve, REFUSE
 #   (w) index.lock mtime read failure                         -> lock kept, REFUSE
 #   (x) transient lock cleared after first failed return      -> retry ALLOW
 #   (y) persistent lock (never clears, not provably stale)    -> REFUSE loudly
@@ -1025,7 +1025,7 @@ test_stale_index_lock_cleanup_rechecks_dirty_worktree() {
   pass "stale lock cleanup rechecks and refuses dirty worktree before return"
 }
 
-test_non_linked_index_lock_path_is_checked_from_worktree() {
+test_unregistered_clone_with_index_lock_is_preserved() {
   local case_dir rc lock
   case_dir=$(make_case non-linked-index-lock)
   git -C "$case_dir/project" worktree remove --force "$case_dir/wt"
@@ -1050,11 +1050,13 @@ test_non_linked_index_lock_path_is_checked_from_worktree() {
   rc=$?
   set -e
 
-  expect_code 0 "$rc" "non-linked-index-lock: teardown should clear a normal repo index.lock"
-  assert_grep "removed provably-stale git lock" "$case_dir/stderr" \
-    "non-linked-index-lock: teardown did not report clearing the stale lock"
-  assert_absent "$lock" "non-linked-index-lock: stale lock file should have been removed"
-  pass "normal repo index.lock is resolved from the worktree and cleared when stale"
+  expect_code 1 "$rc" "non-linked-index-lock: teardown must refuse an unregistered clone"
+  assert_grep "not a registered Git worktree" "$case_dir/stderr" \
+    "non-linked-index-lock: teardown did not explain the provider boundary"
+  [ -d "$case_dir/wt" ] || fail "non-linked-index-lock: unregistered clone was removed"
+  [ -e "$lock" ] || fail "non-linked-index-lock: lock in preserved clone was removed"
+  [ -f "$case_dir/state/task-x1.meta" ] || fail "non-linked-index-lock: metadata was cleared after refusal"
+  pass "unregistered clones and their index locks are preserved"
 }
 
 test_index_lock_mtime_read_failure_refuses() {
@@ -1091,8 +1093,8 @@ test_index_lock_mtime_read_failure_refuses() {
   pass "lock mtime read failures leave worktree index.lock in place and refuse teardown"
 }
 
-test_transient_index_lock_clears_after_first_attempt_and_retry_succeeds() {
-  local case_dir rc lock attempt_file
+test_transient_index_lock_clears_during_patience_window() {
+  local case_dir rc lock
   case_dir=$(make_case transient-index-lock-retry)
   write_meta "$case_dir" no-mistakes ship
   wt_commit "$case_dir" "shippable work"
@@ -1108,27 +1110,20 @@ test_transient_index_lock_clears_after_first_attempt_and_retry_succeeds() {
   # Fresh lock: not old enough for the force-remove path; patience must win.
   touch "$lock"
 
-  attempt_file="$case_dir/treehouse-attempts"
-  : > "$attempt_file"
+  ( sleep 0.05; rm -f "$lock" ) &
 
   set +e
-  TREEHOUSE_ATTEMPT_FILE="$attempt_file" \
-  FM_TREEHOUSE_RETURN_LOCK_RETRIES=2 \
-  FM_TREEHOUSE_RETURN_LOCK_RETRY_WAIT_SECS=0 \
+  FM_WORKTREE_LOCK_RETRY_WAIT_SECS=0.1 \
   FM_STALE_WORKTREE_LOCK_AGE_SECS=3600 \
     run_teardown "$case_dir" > "$case_dir/stdout" 2> "$case_dir/stderr"
   rc=$?
   set -e
 
-  expect_code 0 "$rc" "transient-index-lock: teardown should succeed on retry after lock self-clears"
-  assert_grep "succeeded on retry" "$case_dir/stderr" \
-    "transient-index-lock: teardown did not report success on retry"
+  expect_code 0 "$rc" "transient-index-lock: teardown should succeed after the lock self-clears"
   assert_not_contains "$(cat "$case_dir/stderr")" "removed provably-stale git lock" \
     "transient-index-lock: teardown force-removed a lock that only needed patience"
-  [ "$(cat "$attempt_file")" = 2 ] \
-    || fail "transient-index-lock: expected exactly 2 treehouse return attempts, got $(cat "$attempt_file")"
   assert_absent "$lock" "transient-index-lock: lock should remain cleared after success"
-  pass "transient index.lock cleared after first failed return is retried successfully without force-remove"
+  pass "transient index.lock clears during the bounded patience window without force-removal"
 }
 
 test_persistent_index_lock_exhausts_retries_and_refuses_loudly() {
@@ -1157,8 +1152,8 @@ test_persistent_index_lock_exhausts_retries_and_refuses_loudly() {
   set -e
 
   expect_code 1 "$rc" "persistent-index-lock: teardown should refuse when the lock never clears"
-  assert_grep "persisted across" "$case_dir/stderr" \
-    "persistent-index-lock: teardown did not mention the exhausted retry window"
+  assert_grep "blocked by git lock" "$case_dir/stderr" \
+    "persistent-index-lock: teardown did not identify the lock boundary"
   assert_grep "not provably stale" "$case_dir/stderr" \
     "persistent-index-lock: teardown did not explain the refusal"
   assert_not_contains "$(cat "$case_dir/stderr")" "removed provably-stale git lock" \
@@ -1170,7 +1165,7 @@ test_persistent_index_lock_exhausts_retries_and_refuses_loudly() {
 }
 
 test_empty_retry_wait_uses_default_without_aborting() {
-  local case_dir rc lock attempt_file
+  local case_dir rc lock
   case_dir=$(make_case empty-retry-wait)
   write_meta "$case_dir" no-mistakes ship
   wt_commit "$case_dir" "shippable work"
@@ -1184,13 +1179,10 @@ test_empty_retry_wait_uses_default_without_aborting() {
   mkdir -p "$(dirname "$lock")"
   : > "$lock"
 
-  attempt_file="$case_dir/treehouse-attempts"
-  : > "$attempt_file"
+  ( sleep 0.05; rm -f "$lock" ) &
 
   set +e
-  TREEHOUSE_ATTEMPT_FILE="$attempt_file" \
-  FM_TREEHOUSE_RETURN_LOCK_RETRIES=1 \
-  FM_TREEHOUSE_RETURN_LOCK_RETRY_WAIT_SECS='' \
+  FM_WORKTREE_LOCK_RETRY_WAIT_SECS='' \
   FM_STALE_WORKTREE_LOCK_RETRY_WAIT_SECS='' \
   FM_STALE_WORKTREE_LOCK_AGE_SECS=3600 \
     run_teardown "$case_dir" > "$case_dir/stdout" 2> "$case_dir/stderr"
@@ -1198,10 +1190,6 @@ test_empty_retry_wait_uses_default_without_aborting() {
   set -e
 
   expect_code 0 "$rc" "empty-retry-wait: teardown should fall back to the default wait"
-  assert_grep "waiting 1s and retrying" "$case_dir/stderr" \
-    "empty-retry-wait: teardown did not use the default retry wait"
-  [ "$(cat "$attempt_file")" = 2 ] \
-    || fail "empty-retry-wait: expected exactly 2 treehouse return attempts, got $(cat "$attempt_file")"
   pass "empty retry wait overrides use the default without aborting teardown"
 }
 
@@ -1230,7 +1218,7 @@ test_fractional_legacy_retry_wait_refuses_without_arithmetic_error() {
   set -e
 
   expect_code 1 "$rc" "fractional-legacy-retry-wait: teardown should fail only for the persistent lock"
-  assert_grep "waiting 0.1s each" "$case_dir/stderr" \
+  assert_grep "waiting 0.1s" "$case_dir/stderr" \
     "fractional-legacy-retry-wait: teardown did not preserve the legacy fractional wait"
   assert_not_contains "$(cat "$case_dir/stderr")" "syntax error" \
     "fractional-legacy-retry-wait: teardown hit an arithmetic error"
@@ -1607,9 +1595,9 @@ test_stale_index_lock_cleared_and_teardown_succeeds
 test_live_index_lock_is_never_removed_and_teardown_refuses
 test_lsof_error_never_clears_index_lock
 test_stale_index_lock_cleanup_rechecks_dirty_worktree
-test_non_linked_index_lock_path_is_checked_from_worktree
+test_unregistered_clone_with_index_lock_is_preserved
 test_index_lock_mtime_read_failure_refuses
-test_transient_index_lock_clears_after_first_attempt_and_retry_succeeds
+test_transient_index_lock_clears_during_patience_window
 test_persistent_index_lock_exhausts_retries_and_refuses_loudly
 test_empty_retry_wait_uses_default_without_aborting
 test_fractional_legacy_retry_wait_refuses_without_arithmetic_error

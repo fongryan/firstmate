@@ -2,6 +2,7 @@
 # Integration coverage for autopilot owner propagation through fm-spawn.sh.
 set -u
 
+# shellcheck source=tests/lib.sh
 . "$(dirname "${BASH_SOURCE[0]}")/lib.sh"
 
 SPAWN="$ROOT/bin/fm-spawn.sh"
@@ -41,9 +42,9 @@ run_spawn_case() {
   case_dir="$TMP_ROOT/$name"
   home="$case_dir/home"
   project="$case_dir/project"
-  worktree="$case_dir/worktree"
   log="$case_dir/launch.log"
   id="spawn-$name"
+  worktree="$case_dir/worktrees/$id"
   fakebin=$(make_fakebin "$case_dir/fake")
   if [ "${FM_TEST_LEGACY_CODEX:-0}" = 1 ]; then
     cat > "$fakebin/codex" <<'SH'
@@ -58,12 +59,14 @@ SH
   mkdir -p "$home/config" "$home/data/$id" "$home/projects" "$home/state"
   printf '%s\n' codex > "$home/config/crew-harness"
   printf 'brief for %s\n' "$id" > "$home/data/$id/brief.md"
-  fm_git_worktree "$project" "$worktree" "wt-$name"
+  fm_git_init_commit "$project"
+  mkdir -p "$case_dir/worktrees"
   touch "$home/state/.last-watcher-beat"
   : > "$log"
   FM_ROOT_OVERRIDE='' FM_HOME="$home" FM_STATE_OVERRIDE="$home/state" \
     FM_DATA_OVERRIDE="$home/data" FM_PROJECTS_OVERRIDE="$home/projects" \
     FM_CONFIG_OVERRIDE="$home/config" FM_SPAWN_NO_GUARD=1 \
+    FM_WORKTREE_ROOT="$case_dir/worktrees" \
     FM_CODEX_CLI="${FM_TEST_CODEX_CLI:-}" \
     FM_CODEX_CLI_FALLBACKS="${FM_TEST_CODEX_FALLBACKS:-}" \
     FM_FAKE_PANE_PATH="$worktree" FM_FAKE_LAUNCH_LOG="$log" TMUX='fake,1,0' \

@@ -345,7 +345,7 @@ launch_template() {
     # the defense-in-depth backstop for any pane this flag cannot reach.
     claude) printf '%s' 'CLAUDE_CODE_ENABLE_PROMPT_SUGGESTION=false claude --dangerously-skip-permissions __MODELFLAG____EFFORTFLAG__"$(cat __BRIEF__)"' ;;
     codex)
-      codex_cli=$("$FM_ROOT/bin/fm-harness.sh" codex-cli) || return 1
+      codex_cli=$("$SCRIPT_DIR/fm-harness.sh" codex-cli) || return 1
       # Single-quote the verified absolute/command path for the target shell.
       quoted_codex_cli="'$(printf '%s' "$codex_cli" | sed "s/'/'\\\\''/g")'"
       if [ "$kind" = secondmate ]; then
@@ -392,7 +392,7 @@ case "$ARG3" in
     # The launch_template lookup below is the unverified-adapter guard for both
     # kinds: a harness with no template aborts the spawn.
     if [ "$KIND" = secondmate ]; then
-      HARNESS=$("$FM_ROOT/bin/fm-harness.sh" secondmate)
+      HARNESS=$("$SCRIPT_DIR/fm-harness.sh" secondmate)
       harness_src='config/secondmate-harness (falling back to config/crew-harness)'
     else
       if [ -f "$CONFIG/crew-dispatch.json" ]; then
@@ -432,7 +432,7 @@ case "$ARG3" in
           exit 1
         fi
       else
-        HARNESS=$("$FM_ROOT/bin/fm-harness.sh" crew)
+        HARNESS=$("$SCRIPT_DIR/fm-harness.sh" crew)
         harness_src='config/crew-harness'
       fi
     fi
@@ -720,7 +720,7 @@ fi
  OBJECTIVE=$(grep -m1 -v '^[[:space:]]*#\|^[[:space:]]*$' "$BRIEF" 2>/dev/null | sed 's/^[[:space:]]*//' || true)
  [ -n "$OBJECTIVE" ] || OBJECTIVE="Firstmate task $ID"
  ADMISSION_REPO=$(basename "$PROJ_ABS")
- "$SCRIPT_DIR/fm-lifecycle-admit.sh" --repo "$ADMISSION_REPO" --objective "$OBJECTIVE" >/dev/null
+ "$SCRIPT_DIR/fm-lifecycle-admit.sh" --id "$ID" --repo "$ADMISSION_REPO" --objective "$OBJECTIVE" >/dev/null
 
  if [ "$KIND" != secondmate ] && [ "$BACKEND" != orca ]; then
   WT=$(fm_git_worktree_create "$PROJ_ABS" "$ID") || exit 1
@@ -740,6 +740,14 @@ fi
   }
   trap git_worktree_spawn_abort_cleanup EXIT
  fi
+
+# Backends must open ordinary task surfaces inside the provider-created
+# worktree, never the primary project checkout. Secondmates intentionally run
+# in their already-isolated home; Orca supplies its own managed worktree later.
+TASK_CWD=$PROJ_ABS
+if [ "$KIND" != secondmate ] && [ "$BACKEND" != orca ]; then
+  TASK_CWD=$WT
+fi
 
 # PROJ_ABS can still carry a symlinked path component (e.g. macOS's /tmp ->
 # /private/tmp) when it came from the ship/scout branch's logical `pwd` above.
@@ -799,7 +807,7 @@ case "$BACKEND" in
     # WT_TARGET carries the stable window id for backend routing; the persisted
     # window= handle stays $T (the name form), which is safe now that rename is
     # disabled.
-    WID=$(fm_backend_tmux_create_task "$SES" "$W" "$PROJ_ABS") || exit 1
+    WID=$(fm_backend_tmux_create_task "$SES" "$W" "$TASK_CWD") || exit 1
     WT_TARGET="$WID"
     ;;
   herdr)
@@ -818,7 +826,7 @@ case "$BACKEND" in
     if [ "$KIND" = secondmate ]; then
       HERDR_LABEL_HOME=$PROJ_ABS
     fi
-    HERDR_CONTAINER_RAW=$(FM_HOME="$HERDR_LABEL_HOME" fm_backend_herdr_container_ensure "$PROJ_ABS") || exit 1
+    HERDR_CONTAINER_RAW=$(FM_HOME="$HERDR_LABEL_HOME" fm_backend_herdr_container_ensure "$TASK_CWD") || exit 1
     # fm_backend_herdr_container_ensure echoes "<session>:<workspace_id>\t<seeded_default_tab_id>"
     # (the second field empty when this call ADOPTED a pre-existing workspace
     # rather than creating a fresh one). Split on the guaranteed single tab
@@ -829,7 +837,7 @@ case "$BACKEND" in
     HERDR_SEEDED_DEFAULT_TAB_ID=${HERDR_CONTAINER_RAW#*$'\t'}
     HERDR_SES=${CONTAINER%%:*}
     HERDR_WORKSPACE_ID=${CONTAINER#*:}
-    HERDR_TASK_IDS=$(FM_HOME="$HERDR_LABEL_HOME" fm_backend_herdr_create_task "$CONTAINER" "$W" "$PROJ_ABS" "$HERDR_SEEDED_DEFAULT_TAB_ID") || exit 1
+    HERDR_TASK_IDS=$(FM_HOME="$HERDR_LABEL_HOME" fm_backend_herdr_create_task "$CONTAINER" "$W" "$TASK_CWD" "$HERDR_SEEDED_DEFAULT_TAB_ID") || exit 1
     read -r HERDR_TAB_ID HERDR_PANE_ID <<EOF
 $HERDR_TASK_IDS
 EOF
@@ -841,7 +849,7 @@ EOF
     ;;
   zellij)
     ZELLIJ_SES=$(fm_backend_zellij_container_ensure) || exit 1
-    ZELLIJ_TASK_IDS=$(fm_backend_zellij_create_task "$ZELLIJ_SES" "$W" "$PROJ_ABS") || exit 1
+    ZELLIJ_TASK_IDS=$(fm_backend_zellij_create_task "$ZELLIJ_SES" "$W" "$TASK_CWD") || exit 1
     read -r ZELLIJ_TAB_ID ZELLIJ_PANE_ID <<EOF
 $ZELLIJ_TASK_IDS
 EOF
@@ -853,7 +861,7 @@ EOF
     ;;
   cmux)
     fm_backend_cmux_container_ensure || exit 1
-    CMUX_TASK_IDS=$(fm_backend_cmux_create_task "$W" "$PROJ_ABS") || exit 1
+    CMUX_TASK_IDS=$(fm_backend_cmux_create_task "$W" "$TASK_CWD") || exit 1
     read -r CMUX_WORKSPACE_ID CMUX_SURFACE_ID <<EOF
 $CMUX_TASK_IDS
 EOF

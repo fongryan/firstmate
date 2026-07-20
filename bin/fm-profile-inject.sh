@@ -89,8 +89,6 @@ if [ -f "$PROFILE_COMPACT_PATH" ]; then
   INJECT="$(cat "$PROFILE_COMPACT_PATH")"
 elif [ -f "$PROFILE_PATH" ]; then
   # Fallback: extract per-section from the full PROFILE.md via awk.
-  # Pass SECTIONS via env so awk can read it.
-  SECTIONS="$SECTIONS" \
   INJECT="$(awk -v sections="$SECTIONS" '
     BEGIN { in_section = 0; out = "" }
     /^### / {

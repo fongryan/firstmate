@@ -35,7 +35,8 @@
 #   --fields <list>  opt in to dropped surfaces: bodies,paths,actions,endpoints
 #   --all-in-flight  include every in-flight task
 #   --all-decisions  include every open decision
-#   --all-landed     include every landed record from every home (default: bounded)#   --all-reports    include the full scout-report inventory (default: relevant only)
+#   --all-landed     include every landed record from every home (default: bounded)
+#   --all-reports    include the full scout-report inventory (default: relevant only)
 #   --all-queued     include superseded/held queued items (default: dropped)
 #   --all-recorded-prs include every locally recorded PR
 #   --all-unhealthy  include every unhealthy endpoint
@@ -79,7 +80,6 @@ usage() {
   cat <<'EOF'
 usage: fm-bearings-snapshot.sh [--json] [--include-prs] [--fields <list>]
                                [--all-in-flight] [--all-decisions] [--all-landed]
-                               [--all-in-flight] [--all-decisions]
                                [--all-reports] [--all-queued]
                                [--all-recorded-prs] [--all-unhealthy]
                                [--all-pr-repos]

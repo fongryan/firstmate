@@ -2,6 +2,7 @@
 # Functional smoke for the real Codex Desktop app-server ancestry on macOS.
 set -u
 
+# shellcheck source=tests/lib.sh
 . "$(dirname "${BASH_SOURCE[0]}")/lib.sh"
 
 home=$(mktemp -d "${TMPDIR:-/tmp}/fm-lock-codex-desktop.XXXXXX")
@@ -24,10 +25,9 @@ if [ -z "$app_server" ]; then
   exit 0
 fi
 
-out=$(FM_HOME="$home" "$ROOT/bin/fm-lock.sh")
-owner=$(cat "$home/state/.lock")
-[ "$owner" = "$app_server" ] || fail "real Codex Desktop owner mismatch (owner=$owner app-server=$app_server)"
-assert_contains "$out" "lock acquired: harness pid $app_server" "real app-server acquisition was not reported"
-status=$(FM_HOME="$home" "$ROOT/bin/fm-lock.sh" status)
-assert_contains "$status" "lock: held by live harness pid $app_server" "real app-server liveness was not recognized"
-pass "real Codex Desktop app-server owns and retains an isolated Firstmate lock"
+rc=0
+out=$(FM_HOME="$home" "$ROOT/bin/fm-lock.sh" 2>&1) || rc=$?
+[ "$rc" -ne 0 ] || fail "shared Codex Desktop app-server must not acquire a Firstmate lock"
+assert_contains "$out" "cannot locate harness process in ancestry" "Desktop app-server refusal was not explicit"
+assert_absent "$home/state/.lock" "shared Desktop app-server wrote a fleet lock"
+pass "real Codex Desktop app-server fails closed without a session-specific owner"

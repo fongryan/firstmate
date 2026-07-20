@@ -819,9 +819,13 @@ test_teardown_passes_recorded_tab_id_to_zellij_kill() {
 }
 
 test_forced_secondmate_teardown_kills_zellij_children_with_child_home_tag() {
-  local dir state data config home project fb out status child_title
-  dir="$TMP_ROOT/teardown-zellij-secondmate-child"; state="$dir/state"; data="$dir/data"; config="$dir/config"; home="$dir/secondmate-home"; project="$dir/project"
-  mkdir -p "$state" "$data" "$config" "$home/state" "$home/data" "$home/config" "$home/projects" "$project" "$dir/responses"
+  local dir state data config home project fb out status child_title fmroot worktree_root
+  dir="$TMP_ROOT/teardown-zellij-secondmate-child"; state="$dir/state"; data="$dir/data"; config="$dir/config"; project="$dir/project"
+  fmroot="$dir/firstmate-root"; worktree_root="$dir/worktrees"; home="$worktree_root/secondmate-smz"
+  mkdir -p "$state" "$data" "$config" "$project" "$dir/responses" "$worktree_root"
+  git clone --quiet "$ROOT" "$fmroot"
+  git -C "$fmroot" worktree add --quiet --detach "$home" HEAD
+  mkdir -p "$home/state" "$home/data" "$home/config" "$home/projects"
   printf 'smz\n' > "$home/.fm-secondmate-home"
   fm_write_meta "$state/smz.meta" \
     "window=firstmate:99" \
@@ -844,7 +848,7 @@ test_forced_secondmate_teardown_kills_zellij_children_with_child_home_tag() {
   printf '[]\n' > "$dir/responses/3.out"
   fb=$(make_zellij_fakebin "$dir")
   out=$( PATH="$fb:$PATH" FM_STATE_OVERRIDE="$state" FM_DATA_OVERRIDE="$data" FM_CONFIG_OVERRIDE="$config" \
-    FM_ROOT_OVERRIDE="$ROOT" \
+    FM_ROOT_OVERRIDE="$fmroot" FM_WORKTREE_ROOT="$worktree_root" \
     FM_ZELLIJ_LOG="$dir/log" FM_ZELLIJ_RESPONSES="$dir/responses" FM_ZELLIJ_SESSION_LIST="firstmate" \
     "$ROOT/bin/fm-teardown.sh" smz --force 2>&1 )
   status=$?

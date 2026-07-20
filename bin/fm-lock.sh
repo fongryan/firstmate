@@ -17,11 +17,9 @@ mkdir -p "$STATE"
 # Known harness command names; extend when a new adapter is verified.
 HARNESS_RE='claude|codex|opencode|grok|hermes|^pi$'
 
-# macOS truncates `ps -o comm=` for Codex Desktop's bundled executable to
-# `/Applications/Ch`, so command-name matching alone cannot recognize the
-# stable app-server process. Match an executable-position `codex` token in the
-# full argv as well. Keeping the match anchored avoids treating a shell whose
-# prompt merely mentions "codex" as a harness.
+# Match a session-specific harness by command or executable-position token.
+# Codex Desktop's shared app-server is explicitly excluded below because one
+# host-wide PID cannot identify one Firstmate session.
 process_looks_like_harness() {
   local comm=$1 args=$2 base
   # Use shell parameter expansion (immune to flag parsing on macOS BSD basename).
@@ -37,11 +35,24 @@ process_looks_like_harness() {
   esac
 }
 
+is_shared_codex_app_server() {
+  local comm=$1 args=$2
+  case "${comm##*/} $args" in
+    *codex*app-server*|*app-server*codex*) return 0 ;;
+  esac
+  return 1
+}
+
 harness_pid() {
   local pid=$$ comm args
   for _ in 1 2 3 4 5 6 7 8; do
     comm=$(ps -o comm= -p "$pid" 2>/dev/null) || return 1
     args=$(ps -o args= -p "$pid" 2>/dev/null)
+    is_shared_codex_app_server "$comm" "$args" && {
+      pid=$(ps -o ppid= -p "$pid" 2>/dev/null | tr -d ' ')
+      [ -n "$pid" ] && [ "$pid" -gt 1 ] || return 1
+      continue
+    }
     if process_looks_like_harness "$comm" "$args"; then
       echo "$pid"; return 0
     fi
@@ -55,6 +66,8 @@ holder_alive() {  # true if $1 is a live process that looks like a harness
   local pid=$1 comm args
   kill -0 "$pid" 2>/dev/null || return 1
   comm=$(ps -o comm= -p "$pid" 2>/dev/null) || return 1
+  args=$(ps -o args= -p "$pid" 2>/dev/null)
+  is_shared_codex_app_server "$comm" "$args" && return 1
   args=$(ps -o args= -p "$pid" 2>/dev/null) || return 1
   process_looks_like_harness "$comm" "$args"
 }

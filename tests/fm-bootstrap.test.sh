@@ -5,12 +5,11 @@
 # is well. firstmate consumes the exact 'MISSING: tasks-axi (install: ...)',
 # 'MISSING: quota-axi (install: ...)', and
 # 'TASKS_AXI: available' lines, so those contracts are pinned verbatim. The cases
-# are table-driven over the inputs that vary: whether `treehouse get --help`
-# advertises --lease, which (if any) tasks-axi version is on PATH, whether
+# are table-driven over the inputs that vary: which (if any) tasks-axi version
+# is on PATH, whether
 # tasks-axi update advertises --archive-body, whether its mv help advertises
 # multi-ID moves, whether quota-axi is on PATH,
-# whether the local backend config opts out of tasks-axi backlog mutations, and
-# which no-mistakes version is on PATH.
+# whether the local backend config opts out of tasks-axi backlog mutations.
 # Dedicated fleet-sync cases pin the computed bootstrap timeout, explicit
 # override, blank-env defaulting, partial-output relay, and pre-launch timeout
 # scan.
@@ -46,15 +45,6 @@ fi
 exit 0
 SH
   chmod +x "$fakebin/gh"
-  cat > "$fakebin/no-mistakes" <<'SH'
-#!/usr/bin/env bash
-if [ "${1:-}" = --version ]; then
-  printf '%s\n' "${FM_FAKE_NO_MISTAKES_VERSION:-no-mistakes version v1.31.2 (fake) 2026-06-27T00:02:18Z}"
-  exit 0
-fi
-exit 0
-SH
-  chmod +x "$fakebin/no-mistakes"
   add_tasks_axi "$fakebin" "0.1.1"
   add_quota_axi "$fakebin"
   printf '%s\n' "$fakebin"
@@ -288,60 +278,30 @@ test_bootstrap_does_not_require_treehouse() {
   pass "bootstrap succeeds without Treehouse installed"
 }
 
-test_no_mistakes_is_optional() {
-  local label version mode case_dir fakebin out n
-  n=0
-  while IFS='^' read -r label version mode; do
-    [ -n "$label" ] || continue
-    n=$((n + 1))
-    case_dir="$TMP_ROOT/no-mistakes-optional-$n"
-    mkdir -p "$case_dir/home"
-    mkdir -p "$case_dir/home/config"
-    printf '%s\n' manual > "$case_dir/home/config/backlog-backend"
-    fakebin=$(make_fake_toolchain "$case_dir")
-    add_tasks_axi "$fakebin" "0.1.1"
-    out=$(PATH="$fakebin:$BASE_PATH" FM_HOME="$case_dir/home" FM_ROOT_OVERRIDE="$case_dir/home" \
-      FM_FAKE_TREEHOUSE_LEASE_HELP=1 FM_FAKE_NO_MISTAKES_VERSION="$version" "$ROOT/bin/fm-bootstrap.sh")
-    case "$mode" in
-      empty)
-        [ -z "$out" ] || fail "$label: expected silence, got: $out" ;;
-      missing)
-        fail "$label: obsolete missing mode" ;;
-    esac
-  done <<'ROWS'
-minimum no-mistakes version is accepted^no-mistakes version v1.31.2 (fake)^empty
-newer no-mistakes minor is accepted^no-mistakes version v1.32.0 (fake)^empty
-newer no-mistakes major is accepted^no-mistakes version v2.0.0 (fake)^empty
-older no-mistakes patch does not block bootstrap^no-mistakes version v1.31.1 (fake)^empty
-unparseable no-mistakes version does not block bootstrap^no-mistakes development build^empty
-ROWS
-  pass "bootstrap treats no-mistakes as optional"
-}
-
-test_git_is_required_with_supported_install_instruction() {
-  local case_dir fakebin bash_env out expected
-  case_dir="$TMP_ROOT/git-required"
+test_bootstrap_does_not_require_no_mistakes() {
+  local case_dir fakebin out
+  case_dir="$TMP_ROOT/no-no-mistakes"
   mkdir -p "$case_dir/home/config"
   printf '%s\n' manual > "$case_dir/home/config/backlog-backend"
   fakebin=$(make_fake_toolchain "$case_dir")
-  bash_env="$case_dir/no-git.bash"
-  cat > "$bash_env" <<'SH'
-command() {
-  if [ "${1:-}" = -v ] && [ "${2:-}" = git ]; then
-    return 1
-  fi
-  builtin command "$@"
+  out=$(PATH="$fakebin:$BASE_PATH" FM_HOME="$case_dir/home" FM_ROOT_OVERRIDE="$case_dir/home" \
+    "$ROOT/bin/fm-bootstrap.sh")
+  assert_not_contains "$out" "no-mistakes" "bootstrap must not mention retired no-mistakes dependency"
+  pass "bootstrap succeeds without no-mistakes installed"
 }
-git() {
-  return 127
-}
-SH
 
-  out=$(PATH="$fakebin:$BASE_PATH" BASH_ENV="$bash_env" FM_HOME="$case_dir/home" FM_ROOT_OVERRIDE="$case_dir/home" \
-    FM_FAKE_TREEHOUSE_LEASE_HELP=1 "$ROOT/bin/fm-bootstrap.sh")
-  expected="MISSING: git (install: brew install git  # or the platform's package manager)"
-  [ "$out" = "$expected" ] || fail "missing git should report the supported install instruction, got: $out"
-  pass "bootstrap requires git with an install instruction"
+test_bootstrap_rejects_retired_tool_installers() {
+  local case_dir fakebin tool out rc
+  case_dir="$TMP_ROOT/retired-installers"
+  fakebin=$(fm_fakebin "$case_dir")
+  fm_fake_exit0 "$fakebin" curl
+  for tool in treehouse no-mistakes; do
+    rc=0
+    out=$(PATH="$fakebin:$BASE_PATH" "$ROOT/bin/fm-bootstrap.sh" install "$tool" 2>&1) || rc=$?
+    [ "$rc" -ne 0 ] || fail "bootstrap must reject retired installer for $tool"
+    assert_contains "$out" "unknown tool $tool" "bootstrap must name rejected retired tool $tool"
+  done
+  pass "bootstrap rejects retired Treehouse and no-mistakes installers"
 }
 
 test_git_is_required_with_supported_install_instruction() {
@@ -689,8 +649,8 @@ ROWS
 }
 
 test_bootstrap_reporting
-test_no_mistakes_is_optional
-test_no_mistakes_min_version
+test_bootstrap_does_not_require_no_mistakes
+test_bootstrap_rejects_retired_tool_installers
 test_git_is_required_with_supported_install_instruction
 test_orca_backend_gates_orca_tool_only_when_selected
 test_session_provider_backends_do_not_require_tmux
