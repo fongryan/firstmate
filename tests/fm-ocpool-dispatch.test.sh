@@ -18,7 +18,8 @@ TMP_ROOT=$(fm_test_tmproot fm-ocpool-dispatch-tests)
 STUB_ROOT="$TMP_ROOT/flowstate-stub"
 mkdir -p "$STUB_ROOT/scripts/lib"
 cat > "$STUB_ROOT/scripts/lib/local-agent-runner.mjs" <<'JS'
-import { writeFileSync } from "node:fs";
+import { mkdirSync, writeFileSync } from "node:fs";
+import { join } from "node:path";
 
 export async function executeLocalTask(task, options) {
   if (process.env.FM_OCPOOL_TEST_STUB_CAPTURE) {
@@ -33,7 +34,7 @@ export async function executeLocalTask(task, options) {
     }, null, 2));
   }
   const status = process.env.FM_OCPOOL_TEST_STUB_STATUS || "verified";
-  return {
+  const result = {
     id: task.id,
     repo: task.repo,
     repoName: "stub-repo",
@@ -44,8 +45,17 @@ export async function executeLocalTask(task, options) {
     sourceSha: "deadbeef",
     worktree: "/tmp/stub-worktree",
     proof: [],
-    error: status === "verified" ? null : `stub status ${status}`,
+    error: status === "verified" ? null : (process.env.FM_OCPOOL_TEST_STUB_ERROR || `stub status ${status}`),
   };
+  // Mirrors local-agent-runner.mjs's own writeReceipt only when the test
+  // opts in, so tests can exercise both the "persisted" and "not persisted"
+  // receiptPath branches against the real filesystem.
+  if (process.env.FM_OCPOOL_TEST_STUB_WRITE_RECEIPT === "1" && options?.stateRoot && options?.runId) {
+    const dir = join(options.stateRoot, "runs", options.runId);
+    mkdirSync(dir, { recursive: true });
+    writeFileSync(join(dir, `${task.id}.receipt.json`), `${JSON.stringify(result, null, 2)}\n`);
+  }
+  return result;
 }
 JS
 
@@ -101,8 +111,8 @@ test_agent_orch_depth_refusal() {
     --task-id depth-cap --repo "$REPO_DIR" --prompt-file "$PROMPT_FILE" 2>"$err_file")
   status=$?
   err=$(cat "$err_file")
-  expect_code 5 "$status" "AGENT_ORCH_DEPTH 2 -> 3 should exceed the hard cap and refuse"
-  assert_contains "$err" "exceeding the spawn-safety hard cap of 2" "depth-cap refusal should name the hard cap"
+  expect_code 5 "$status" "AGENT_ORCH_DEPTH already at 2 should refuse (mirrors compass-frozen-replay.mjs's parentDepth >= 2)"
+  assert_contains "$err" "at or past the spawn-safety hard cap of 2" "depth-cap refusal should name the hard cap"
   [ ! -e "$capture" ] || fail "depth-cap refusal must refuse before ever calling executeLocalTask"
 
   capture="$TMP_ROOT/capture-depth-ok.json"
@@ -125,10 +135,8 @@ test_prompt_file_not_argv() {
   assert_grep 'Implement the thing.' "$capture" "task outcome should carry the prompt file content"
   assert_grep 'Second line.' "$capture" "task outcome should carry every line of the prompt file"
 
-  set +e
   out=$(node "$CLI" --task-id x --repo "$REPO_DIR" --prompt "inline text should not exist as a flag" 2>&1)
   status=$?
-  set -e
   expect_code 5 "$status" "there must be no --prompt (argv) flag, only --prompt-file"
   assert_contains "$out" "unrecognized argument" "a bare --prompt flag should be rejected as unrecognized, proving no argv prompt path exists"
   pass "prompt text reaches the task packet only via --prompt-file; no argv-based prompt flag exists"
@@ -175,17 +183,13 @@ TXT
 
 test_usage_errors() {
   local out status
-  set +e
   out=$(node "$CLI" --repo "$REPO_DIR" --prompt-file "$PROMPT_FILE" 2>&1)
   status=$?
-  set -e
   expect_code 5 "$status" "missing --task-id should exit 5"
   assert_contains "$out" "--task-id is required" "missing --task-id should name the flag"
 
-  set +e
   out=$(node "$CLI" --task-id t --repo "$REPO_DIR" --prompt-file "$PROMPT_FILE" --bogus-flag value 2>&1)
   status=$?
-  set -e
   expect_code 5 "$status" "unrecognized flag should exit 5"
   assert_contains "$out" "unrecognized argument: --bogus-flag" "unrecognized flag should be named in the error"
   pass "missing required flags and unrecognized flags are rejected as usage errors with exit 5"
@@ -240,6 +244,90 @@ test_json_vs_pretty_output() {
   pass "default output is pretty-printed JSON; --json prints one compact line"
 }
 
+test_stdout_is_exactly_the_receipt() {
+  local out err_file capture
+  capture="$TMP_ROOT/capture-stdout-pretty.json"
+  err_file="$TMP_ROOT/stdout-pretty.err"
+  out=$(FM_OCPOOL_TEST_STUB_STATUS=verified run_dispatch "$capture" \
+    --task-id stdout-pretty --repo "$REPO_DIR" --prompt-file "$PROMPT_FILE" 2>"$err_file")
+  expect_code 0 "$?" "pretty-mode run should verify"
+  printf '%s' "$out" | node -e 'JSON.parse(require("fs").readFileSync(0, "utf8"))' \
+    || fail "default-mode stdout must parse as exactly one JSON value"
+  assert_not_contains "$out" "receiptPath" "stdout must never carry the receiptPath diagnostic"
+  assert_grep "receiptPath:" "$err_file" "receiptPath diagnostic should land on stderr in default mode"
+
+  capture="$TMP_ROOT/capture-stdout-json.json"
+  err_file="$TMP_ROOT/stdout-json.err"
+  out=$(FM_OCPOOL_TEST_STUB_STATUS=verified run_dispatch "$capture" \
+    --task-id stdout-json --repo "$REPO_DIR" --prompt-file "$PROMPT_FILE" --json 2>"$err_file")
+  expect_code 0 "$?" "--json run should verify"
+  printf '%s' "$out" | node -e 'JSON.parse(require("fs").readFileSync(0, "utf8"))' \
+    || fail "--json stdout must parse as exactly one JSON value"
+  assert_not_contains "$out" "receiptPath" "stdout must never carry the receiptPath diagnostic in --json mode either"
+  assert_grep "receiptPath:" "$err_file" "receiptPath diagnostic should land on stderr in --json mode too"
+  pass "stdout is exactly the receipt JSON object in both modes; the receiptPath diagnostic only ever goes to stderr"
+}
+
+test_receipt_path_diagnostic_reflects_reality() {
+  local state_root capture err_file receipt_file
+
+  # Default: the stub does not persist a receipt file, so the diagnostic
+  # must say so honestly rather than just printing the theoretical path.
+  # state_root is normalized through the same path.resolve() the bridge
+  # itself applies to FM_OCPOOL_DISPATCH_STATE_ROOT - TMP_ROOT can carry a
+  # literal double slash on macOS (TMPDIR already ends in "/"), which
+  # path.resolve() collapses; comparing against the raw un-normalized string
+  # would fail even though the paths are identical on disk.
+  state_root=$(node -e 'console.log(require("path").resolve(process.argv[1]))' "$TMP_ROOT/state-root-unwritten")
+  capture="$TMP_ROOT/capture-receiptpath-unwritten.json"
+  err_file="$TMP_ROOT/receiptpath-unwritten.err"
+  FM_OCPOOL_DISPATCH_STATE_ROOT="$state_root" FM_OCPOOL_DISPATCH_RUN_ID="run-unwritten" \
+    FM_OCPOOL_TEST_STUB_STATUS=blocked run_dispatch "$capture" \
+    --task-id receiptpath-unwritten --repo "$REPO_DIR" --prompt-file "$PROMPT_FILE" 2>"$err_file" >/dev/null
+  assert_grep "receiptPath: $state_root/runs/run-unwritten/receiptpath-unwritten.receipt.json (not written to disk for this outcome)" \
+    "$err_file" "unwritten receipt should be reported honestly, not assumed present"
+
+  # Opt-in: the stub persists a receipt file exactly like local-agent-
+  # runner.mjs's writeReceipt does; the diagnostic must confirm it exists,
+  # verified against the real filesystem, not just against receipt status.
+  state_root=$(node -e 'console.log(require("path").resolve(process.argv[1]))' "$TMP_ROOT/state-root-written")
+  capture="$TMP_ROOT/capture-receiptpath-written.json"
+  err_file="$TMP_ROOT/receiptpath-written.err"
+  FM_OCPOOL_DISPATCH_STATE_ROOT="$state_root" FM_OCPOOL_DISPATCH_RUN_ID="run-written" \
+    FM_OCPOOL_TEST_STUB_STATUS=verified FM_OCPOOL_TEST_STUB_WRITE_RECEIPT=1 run_dispatch "$capture" \
+    --task-id receiptpath-written --repo "$REPO_DIR" --prompt-file "$PROMPT_FILE" 2>"$err_file" >/dev/null
+  receipt_file="$state_root/runs/run-written/receiptpath-written.receipt.json"
+  assert_present "$receipt_file" "test stub should have actually written the receipt file"
+  assert_grep "receiptPath: $receipt_file" "$err_file" "written receipt path should be reported"
+  assert_no_grep "not written to disk" "$err_file" "written receipt should not carry the not-written caveat"
+  pass "the receiptPath diagnostic is checked against the real filesystem, not guessed from receipt status"
+}
+
+test_dirty_checkout_needs_captain_not_requeue() {
+  local capture err_file out status
+  capture="$TMP_ROOT/capture-dirty.json"
+  err_file="$TMP_ROOT/dirty.err"
+  out=$(FM_OCPOOL_TEST_STUB_STATUS=blocked \
+    FM_OCPOOL_TEST_STUB_ERROR="source checkout is dirty; commit/stash it or set allowDirtySource=true explicitly" \
+    run_dispatch "$capture" --task-id dirty-checkout --repo "$REPO_DIR" --prompt-file "$PROMPT_FILE" 2>"$err_file")
+  status=$?
+  expect_code 5 "$status" "a dirty-checkout blocked receipt should exit 5 (needs-captain), not 2 (requeue)"
+  assert_contains "$out" '"status": "blocked"' "the receipt itself should still be printed and still say blocked"
+  assert_grep "needs captain attention, not an automatic requeue" "$err_file" \
+    "dirty-checkout refusal should say plainly why the pool must not just requeue it"
+
+  # Contrast: an ordinary blocked reason (not the dirty-checkout string)
+  # keeps the normal requeue-safe exit 2, already covered by
+  # test_exit_code_mapping's generic "blocked" case; this just documents the
+  # boundary is the error text, not the status alone.
+  capture="$TMP_ROOT/capture-not-dirty.json"
+  out=$(FM_OCPOOL_TEST_STUB_STATUS=blocked FM_OCPOOL_TEST_STUB_ERROR="resource guard refused spawn: free memory 5% is below 12%" \
+    run_dispatch "$capture" --task-id not-dirty-checkout --repo "$REPO_DIR" --prompt-file "$PROMPT_FILE")
+  status=$?
+  expect_code 2 "$status" "a non-dirty-checkout blocked reason should stay requeue-safe exit 2"
+  pass "only the dirty-source-checkout blocked reason is remapped to needs-captain exit 5; other blocked reasons stay requeue-safe exit 2"
+}
+
 test_exit_code_mapping
 test_missing_flowstate_diagnostic
 test_agent_orch_depth_refusal
@@ -251,5 +339,8 @@ test_help
 test_repo_resolved_to_absolute
 test_model_default_and_override
 test_json_vs_pretty_output
+test_stdout_is_exactly_the_receipt
+test_receipt_path_diagnostic_reflects_reality
+test_dirty_checkout_needs_captain_not_requeue
 
 echo "# all fm-ocpool-dispatch tests passed"
