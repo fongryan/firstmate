@@ -198,9 +198,7 @@ Installing the keeper is safe by itself: the loop stays inert until `fm-ocpool.s
 
 ## Known limitations
 
-- **`fm-autopilot.sh` capacity cross-contamination.** `fm-autopilot.sh`'s own `count_active_crew()` scans `state/*.meta` excluding only `kind=secondmate`; it does not know about `kind=ocpool-worker`.
-  Because this loop's tasks never write a `state/<key>.status` file (that convention belongs to interactive crewmates), `fm-autopilot.sh`'s `last_status_line` check for a pool task's meta comes back empty, which its own logic treats as "not yet terminal" - so a pool task counts against `fm-autopilot.sh`'s own concurrency cap for as long as it is in flight, silently reducing `fm-autopilot.sh`'s effective dispatch capacity while this loop has active work.
-  This is bounded (this loop's own concurrency default is a modest 3) but real.
-  The clean fix is a one-line addition to `fm-autopilot.sh`'s `count_active_crew()` (`[ "$kind" = secondmate ] && continue` becoming `case "$kind" in secondmate|ocpool-worker) continue ;; esac`), mirroring the existing `secondmate` exclusion exactly - out of this loop's own file slice, so it was not made here; flag it to whoever owns `fm-autopilot.sh` before running both loops concurrently at meaningful scale.
+- **`fm-autopilot.sh` capacity coexistence (resolved).** `fm-autopilot.sh`'s `count_active_crew()` excludes `kind=ocpool-worker` metas the same way it excludes `kind=secondmate`, so pool tasks never consume autopilot's own dispatch capacity.
+  Each loop's cap governs only its own dispatches; the machine-wide agent ceiling is the resource guardian's enforce-mode admission check (see "Capacity semantics").
 - **No `## Done` pruning knob.** Pruning `## Done` to the configured keep count is entirely `tasks-axi done`'s own responsibility (`.tasks.toml`'s `done_keep`), since this loop no longer hand-edits the backlog at all.
 - **Fleet-view / session-digest integration is groundwork only.** The `state/<key>.meta` this loop writes uses the standard field shape (`AGENTS.md` section 2), including a synthetic `window=ocpool:<key>` (not a real backend window - there is no pane), but `bin/fm-fleet-view.sh` and the session-start digest have not been extended to specially render an `ocpool-worker` kind; they will show one, but not necessarily meaningfully.

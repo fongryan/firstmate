@@ -370,13 +370,13 @@ count_queued() {  # count of '[ ]' items in Queued
 # --- capacity ---------------------------------------------------------------
 # count_active_crew: crewmates (kind ship/scout) whose last status is not a
 # terminal verb. secondmates are persistent and excluded from the concurrency
-# cap.
+# cap; ocpool workers are capacity-governed by their own loop (docs/ocpool.md).
 count_active_crew() {
   local meta id kind last n=0
   for meta in "$STATE"/*.meta; do
     [ -f "$meta" ] || continue
     kind=$(meta_get "$meta" kind)
-    [ "$kind" = secondmate ] && continue
+    case "$kind" in secondmate|ocpool-worker) continue ;; esac
     id=$(basename "$meta" .meta)
     last=$(last_status_line "$STATE/$id.status")
     if [ -n "$last" ] && printf '%s' "$last" | grep -qiE "$TERMINAL_RE"; then
