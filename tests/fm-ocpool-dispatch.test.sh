@@ -209,13 +209,13 @@ test_repo_resolved_to_absolute() {
   local capture cwd repo_physical
   capture="$TMP_ROOT/capture-repo-abs.json"
   cwd=$(pwd)
-  cd "$TMP_ROOT"
+  cd "$TMP_ROOT" || fail "could not cd into TMP_ROOT $TMP_ROOT"
   # node's process.cwd() (and therefore path.resolve()) reports the physical
   # path, which differs from $TMP_ROOT on macOS where /var is a symlink to
   # /private/var; compare against the same physical path node will resolve.
   repo_physical=$(cd repo && pwd -P)
   run_dispatch "$capture" --task-id repo-abs --repo "./repo" --prompt-file "$PROMPT_FILE" >/dev/null
-  cd "$cwd"
+  cd "$cwd" || fail "could not cd back to $cwd"
   assert_grep "\"repo\": \"$repo_physical\"" "$capture" "a relative --repo should be resolved to an absolute path before reaching the packet"
   pass "relative --repo values are resolved to absolute paths"
 }
