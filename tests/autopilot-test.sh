@@ -342,6 +342,41 @@ test_capacity_cap_blocks_dispatch() {
   pass "dispatch is blocked when active crew count is at the concurrency cap"
 }
 
+# --- ocpool-worker metas excluded from capacity -----------------------------
+# fm-ocpool.sh (bin/fm-ocpool.sh) writes state/<key>.meta with kind=ocpool-worker
+# for its own dispatched tasks, and - unlike an interactive crewmate - never
+# writes a matching state/<key>.status file. Before the kind=ocpool-worker
+# exclusion, count_active_crew() had no way to recognize such a meta as
+# terminal (last_status_line comes back empty, which its own logic treats as
+# "not yet terminal"), so a pool task silently consumed a slot in autopilot's
+# own concurrency cap for as long as it was in flight. This asserts the fix:
+# an ocpool-worker meta with no status file must not count at all.
+test_ocpool_worker_meta_excluded_from_capacity() {
+  local home spawn out i
+  home=$(new_home ocpool-capacity)
+  spawn=$(stub_spawn "$home")
+  printf '%s\n' '# Backlog' '## Queued' \
+    '- [ ] fix-new - do a thing (repo: demo) (kind: ship) (priority: 1)' > "$home/data/backlog.md"
+  # Two active (non-terminal) crews - one slot short of the default cap of 3 -
+  # plus one ocpool-worker meta with no state/<key>.status file, exactly as
+  # fm-ocpool.sh leaves it. If the ocpool-worker meta counted, active would
+  # read 3 (at cap) and dispatch would be skipped; excluded, active reads 2
+  # and the one free slot dispatches fix-new.
+  for i in 1 2; do
+    printf 'window=fm:busy%s\nkind=ship\nproject=%s\nmode=no-mistakes\nyolo=off\n' "$i" "$home/projects/demo" > "$home/state/busy$i.meta"
+    printf 'working: mid-task\n' > "$home/state/busy$i.status"
+  done
+  printf 'window=ocpool:pool-x\nkind=ocpool-worker\nproject=%s\nmode=ocpool\nyolo=off\nlifecycle_id=pool-x-a1\n' \
+    "$home/projects/demo" > "$home/state/pool-x.meta"
+  FM_HOME="$home" FM_ROOT_OVERRIDE="$ROOT" bash "$AP" arm "test" >/dev/null
+
+  out=$(FM_HOME="$home" FM_ROOT_OVERRIDE="$ROOT" FM_AUTOPILOT_SPAWN_CMD="$spawn" bash "$AP" once 2>&1)
+  assert_not_contains "$out" "dispatch skipped" "the ocpool-worker meta wrongly pushed active count to the cap"
+  assert_present "$home/state/fix-new.meta" "an ocpool-worker meta with no status file counted against autopilot's own concurrency cap"
+
+  pass "a kind=ocpool-worker meta never counts against fm-autopilot.sh's own concurrency cap"
+}
+
 # --- arm / disarm -----------------------------------------------------------
 test_arm_disarm() {
   local home
@@ -391,4 +426,5 @@ test_dispatch_child_retains_autopilot_owner
 test_yolo_on_merges_green_done_once
 test_yolo_off_done_escalates
 test_capacity_cap_blocks_dispatch
+test_ocpool_worker_meta_excluded_from_capacity
 test_arm_disarm
