@@ -354,6 +354,19 @@ launch_template() {
         printf '%s' "$quoted_codex_cli __MODELFLAG____EFFORTFLAG__--dangerously-bypass-approvals-and-sandbox -c \"notify=[\\\"bash\\\",\\\"-c\\\",\\\"touch __TURNEND__\\\"]\" \"\$(cat __BRIEF__)\""
       fi
       ;;
+    # Deliberately interactive `opencode --prompt`, NOT `opencode run` and NOT
+    # routed through meta-orchestrator/bin/oc-checked. oc-checked's contract
+    # (MODEL-ROUTING.md "Checked dispatch to MiniMax") is a single bounded
+    # one-shot task on an isolated ephemeral OPENCODE_DB: run, verify, retry
+    # once, exit. A firstmate crewmate is the opposite shape - a long-lived
+    # supervised TUI pane that firstmate steers over its whole task lifetime
+    # via bin/fm-send.sh, interrupts/resumes per harness-adapters, handles
+    # trust dialogs in, and that reports turn boundaries through the
+    # .opencode/plugins/fm-turn-end.js hook installed below (a session.idle
+    # listener with no equivalent in one-shot `opencode run`). None of that
+    # is expressible in oc-checked's one-shot model, so this launch keeps its
+    # own persistent OPENCODE_DB (the shared interactive one) intentionally -
+    # it is a supervised agent, not gruntwork dispatch.
     opencode) printf '%s' 'OPENCODE_CONFIG_CONTENT='\''{"permission":{"*":"allow"}}'\'' opencode __MODELFLAG__--prompt "$(cat __BRIEF__)"' ;;
     pi)
       if [ "$kind" = secondmate ]; then
