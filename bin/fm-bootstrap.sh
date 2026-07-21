@@ -73,6 +73,14 @@
 #          secondmate homes, X-mode artifacts, project clones, or repair
 #          instructions. Unset/0 (the default) runs every sweep exactly as
 #          before - this flag is purely additive.
+#          When FM_BOOTSTRAP_SCOPED=1 is set, the four sweeps each try to
+#          acquire their own scoped lock key (fleet, secondmate-sync,
+#          x-mode) before running. A sweep whose key is held live by another
+#          session skips cleanly with a SKIPPED_LOCKED line; the rest of the
+#          sweep set still runs. This lets a +yolo captain fire a fleet_sync
+#          while a secondmate-sync is in flight without one blocking the
+#          other. The legacy single-key behavior is unchanged when this
+#          flag is unset/0.
 #        fm-bootstrap.sh install <tool>...
 #          Install the named tools (only ones the captain approved).
 set -u

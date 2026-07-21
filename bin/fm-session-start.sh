@@ -143,7 +143,18 @@ section "SESSION START - $FM_HOME"
 
 # --- 1. lock -----------------------------------------------------------
 subsection "LOCK"
-LOCK_OUT=$("$SCRIPT_DIR/fm-lock.sh" 2>&1)
+# FM_SESSION_LOCK_KEYS lets the captain (or a fleet orchestrator) opt into
+# scoped-key acquisition at session start. Default is unset, in which case
+# fm-lock.sh acquires the full default key set and the legacy status line is
+# emitted. Explicit values like 'fleet,lifecycle' or 'queue' restrict the
+# session's footprint to exactly those keys, freeing other workers to run
+# concurrently on the disjoint keys without contention. The read-only banner
+# wording remains identical regardless of which key set was acquired.
+LOCK_ARGS=()
+if [ -n "${FM_SESSION_LOCK_KEYS:-}" ]; then
+  LOCK_ARGS=(--keys "$FM_SESSION_LOCK_KEYS")
+fi
+LOCK_OUT=$("$SCRIPT_DIR/fm-lock.sh" "${LOCK_ARGS[@]}" 2>&1)
 LOCK_RC=$?
 printf '%s\n' "$LOCK_OUT"
 READ_ONLY=0
