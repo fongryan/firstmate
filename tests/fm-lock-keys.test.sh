@@ -212,6 +212,32 @@ test_stale_owner_recovers_per_key() {
   pass "stale per-key pid self-recovers on next acquire"
 }
 
+test_release_frees_only_the_callers_key() {
+  local home fakebin session_pid blocker_pid out rc
+  home="$TMP_ROOT/release"; mkdir -p "$home/state/.locks"
+  fakebin=$(make_fake_ps "$home/fake")
+  spawn_live_session_pid "$TMP_ROOT/.session-release-owner"
+  session_pid=$(cat "$TMP_ROOT/.session-release-owner")
+  LIVE_PIDS+=("$session_pid")
+  spawn_live_session_pid "$TMP_ROOT/.session-release-blocker"
+  blocker_pid=$(cat "$TMP_ROOT/.session-release-blocker")
+  LIVE_PIDS+=("$blocker_pid")
+
+  out=$(run_with_fake_ps "$home" "$fakebin" "$session_pid" "$LOCK" --keys queue 2>&1) \
+    || fail "queue acquisition failed: $out"
+  out=$(run_with_fake_ps "$home" "$fakebin" "$session_pid" "$LOCK" release --keys queue 2>&1) \
+    || fail "queue release failed: $out"
+  [ ! -e "$home/state/.locks/queue.lock" ] || fail "released queue key remained on disk"
+  assert_contains "$out" "lock released: harness pid" "release did not report its owner"
+
+  printf '%s\n' "$blocker_pid" > "$home/state/.locks/fleet.lock"
+  rc=0
+  run_with_fake_ps "$home" "$fakebin" "$session_pid" "$LOCK" release --keys fleet 2>/dev/null || rc=$?
+  [ "$rc" -eq 1 ] || fail "release by a non-owner must fail closed (got $rc)"
+  [ "$(cat "$home/state/.locks/fleet.lock")" = "$blocker_pid" ] || fail "non-owner release changed fleet holder"
+  pass "release frees only keys owned by the current session"
+}
+
 test_includes_honors_requested_set() {
   local home fakebin session_pid
   home="$TMP_ROOT/includes"
@@ -316,6 +342,7 @@ test_legacy_status_unaffected() {
 test_default_acquire_writes_legacy_and_keys
 test_disjoint_keys_acquire_in_parallel
 test_stale_owner_recovers_per_key
+test_release_frees_only_the_callers_key
 test_includes_honors_requested_set
 test_bad_csv_returns_2_and_writes_nothing
 test_status_per_key_prints_holders

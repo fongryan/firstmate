@@ -104,6 +104,38 @@ STATE="${FM_STATE_OVERRIDE:-$FM_HOME/state}"
 # shellcheck source=bin/fm-backend.sh disable=SC1091
 . "$SCRIPT_DIR/fm-backend.sh"
 
+FM_LOCK_BIN="${FM_LOCK_BIN:-$SCRIPT_DIR/fm-lock.sh}"
+
+run_scoped_mutation() {
+  # A scoped bootstrap avoids treating unrelated maintenance as one fleet-wide
+  # critical section. It locks only while executing the mutation, then releases
+  # that exact key so another healthy session can make forward progress.
+  local key=$1 label=$2 lock_out lock_rc action_rc release_out
+  shift 2
+  if [ "${FM_BOOTSTRAP_SCOPED:-0}" != 1 ]; then
+    "$@"
+    return $?
+  fi
+  lock_out=$("$FM_LOCK_BIN" --keys "$key" 2>&1)
+  lock_rc=$?
+  if [ "$lock_rc" -ne 0 ]; then
+    if [ "$lock_rc" -eq 3 ]; then
+      echo "BOOTSTRAP_SCOPED: $label: skipped: session-specific harness identity unavailable"
+    else
+      echo "BOOTSTRAP_SCOPED: $label: skipped: $lock_out"
+    fi
+    return 0
+  fi
+  "$@"
+  action_rc=$?
+  release_out=$("$FM_LOCK_BIN" release --keys "$key" 2>&1)
+  if [ $? -ne 0 ]; then
+    echo "BOOTSTRAP_SCOPED: $label: lock release failed: $release_out"
+    return 1
+  fi
+  return "$action_rc"
+}
+
 fleet_sync_origin_backed_project_count() {
   local count proj
   count=0
@@ -736,9 +768,9 @@ if ! fm_backlog_backend_manual "$CONFIG" && fm_tasks_axi_compatible; then
   echo "TASKS_AXI: available"
 fi
 if [ "${FM_BOOTSTRAP_DETECT_ONLY:-0}" != 1 ]; then
-  secondmate_sync
-  secondmate_liveness_sweep
-  x_mode_setup
-  fleet_sync
+  run_scoped_mutation secondmate-sync secondmate-sync secondmate_sync
+  run_scoped_mutation secondmate-sync secondmate-liveness secondmate_liveness_sweep
+  run_scoped_mutation x-mode x-mode x_mode_setup
+  run_scoped_mutation fleet fleet-sync fleet_sync
 fi
 exit 0

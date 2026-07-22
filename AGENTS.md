@@ -123,8 +123,8 @@ Session start is one command, not a sequence of separate reads.
 Run `bin/fm-session-start.sh`.
 It composes today's `fm-lock.sh`, `fm-bootstrap.sh`, and `fm-wake-drain.sh` - calling each as a real subprocess, never reimplementing their logic - then prints a full context digest and fleet-state digest, in one ordered, clearly delimited report:
 
-1. **Lock** - acquires the per-home session lock first, before anything mutates shared state.
-   Set `FM_SESSION_LOCK_KEYS=fleet,queue,lifecycle,secondmate-sync,x-mode` (or any subset) before running to opt into scoped-key acquisition. Unset keeps the legacy default (the full default key set, exactly as before). Scoped callers do not contend with workers holding disjoint keys, so captain + parallel crew spawns no longer bottleneck on a single lock file.
+1. **Lock** - verifies a session-specific owner before anything mutates shared state.
+   The default `FM_SESSION_LOCK_MODE=scoped` acquires and releases one key around each mutation (`queue`, `lifecycle`, `fleet`, `secondmate-sync`, or `x-mode`), so unrelated operations do not bottleneck behind one session-wide PID file. Use `FM_SESSION_LOCK_MODE=legacy` only to retain the former full-session lock; its optional `FM_SESSION_LOCK_KEYS` value selects a legacy key subset. A shared Codex Desktop app-server deliberately has no session-specific owner, so it reports control-plane unavailability rather than pretending another session owns a lock; use direct repo workflow there or a terminal-harness Firstmate owner for control-plane mutations.
 2. **Bootstrap** - detect-only diagnostics (tool/version problems, GitHub auth, the worktree-tangle check, harness override, dispatch-profile validation, backlog-backend status) always run and always print.
    When the lock could not be acquired, the worktree-tangle check uses read-only advisory wording without a checkout repair command.
    The four MUTATING sweeps - fleet sync, the local secondmate fast-forward sweep, the secondmate liveness sweep, and X-mode artifact writes - run only when this session actually holds the lock from step 1.

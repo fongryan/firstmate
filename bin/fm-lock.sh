@@ -9,6 +9,7 @@
 # Scoped keys (opt-in, additive):
 #
 #   fm-lock.sh --keys <csv>           acquire only the listed lock keys
+#   fm-lock.sh release [--keys <csv>] release only keys owned by this harness
 #   fm-lock.sh status                 print holder for the legacy monolithic lock
 #   fm-lock.sh status --keys <csv>    print holders for each listed key
 #   fm-lock.sh keys                   list the default key set
@@ -59,10 +60,11 @@ DEFAULT_KEYS_CSV='fleet,queue,lifecycle,secondmate-sync,x-mode'
 
 usage() {
   cat <<'USAGE'
-Usage: fm-lock.sh [--keys <csv>] [--includes <key>] [status|keys] [keys list]
+Usage: fm-lock.sh [--keys <csv>] [--includes <key>] [release|status|keys] [keys list]
 
   (no args)                acquire the default key set; fail if any held live
   --keys <csv>             acquire only the listed keys (legacy-compatible subset)
+  release [--keys <csv>]   release only requested keys owned by this harness
   status                   print holders of the legacy monolithic lock
   status --keys <csv>      print holders for each listed key
   keys [list]              print the default key set
@@ -79,6 +81,7 @@ while [ $# -gt 0 ]; do
     --keys=*) KEYS="${1#--keys=}"; shift ;;
     --includes) INCLUDE_KEY="$2"; MODE="includes"; shift 2 ;;
     --includes=*) INCLUDE_KEY="${1#--includes=}"; shift ;;
+    release) MODE="release"; shift ;;
     status) MODE="status"; shift ;;
     keys) MODE="keys"; shift ;;
     -h|--help) usage; exit 0 ;;
@@ -295,6 +298,24 @@ acquire_one_key() {
   return 0
 }
 
+release_one_key() {
+  # Remove a key only when this same stable harness owns every representation.
+  # Never delete a contender's key: an ambiguous or foreign owner fails closed.
+  local key=$1 lock_file legacy_target holder legacy
+  case "$key" in ''|*[!a-z0-9_-]*) return 2 ;; esac
+  lock_file=$(key_file_for "$key")
+  if legacy_target=$(key_legacy_target "$key"); then :; fi
+  holder=$(cat "$lock_file" 2>/dev/null || true)
+  legacy=""
+  [ -n "$legacy_target" ] && legacy=$(cat "$legacy_target" 2>/dev/null || true)
+  if { [ -n "$holder" ] && [ "$holder" != "$me" ]; } || { [ -n "$legacy" ] && [ "$legacy" != "$me" ]; }; then
+    return 1
+  fi
+  [ -z "$holder" ] || rm -f "$lock_file"
+  [ -z "$legacy_target" ] || [ -z "$legacy" ] || rm -f "$legacy_target"
+  return 0
+}
+
 # --- mode dispatch ---------------------------------------------------------
 
 case "$MODE" in
@@ -324,6 +345,24 @@ case "$MODE" in
     exit 0
     ;;
 
+  release)
+    me=$(harness_pid) || { echo "error: no session-specific Firstmate harness identity; shared Codex Desktop app-server cannot own fleet state" >&2; exit 3; }
+    requested_keys_file=$(mktemp "${TMPDIR:-/tmp}/fm-lock-keys.XXXXXX" 2>/dev/null) || { echo "error: cannot create temp file" >&2; exit 1; }
+    trap 'rm -f "$requested_keys_file"' EXIT INT TERM
+    requested_keys > "$requested_keys_file" || { echo "error: --keys csv is empty or invalid" >&2; exit 2; }
+    released=""
+    while IFS= read -r k; do
+      [ -z "$k" ] && continue
+      if ! release_one_key "$k"; then
+        echo "error: cannot release '$k' lock key because this harness is not its owner" >&2
+        exit 1
+      fi
+      released="${released}${released:+,}$k"
+    done < "$requested_keys_file"
+    echo "lock released: harness pid $me keys=$released"
+    exit 0
+    ;;
+
   acquire)
     # Preserve the legacy autopilot-ownership rule: a dispatched app-server
     # running under the Bash autopilot must NOT claim a lock key when the
@@ -337,7 +376,7 @@ case "$MODE" in
       exit 1
     fi
 
-    me=$(harness_pid) || { echo "error: cannot locate harness process in ancestry" >&2; exit 1; }
+    me=$(harness_pid) || { echo "error: no session-specific Firstmate harness identity; shared Codex Desktop app-server cannot own fleet state" >&2; exit 3; }
 
     requested_keys_file=$(mktemp "${TMPDIR:-/tmp}/fm-lock-keys.XXXXXX" 2>/dev/null) || { echo "error: cannot create temp file" >&2; exit 1; }
     trap 'rm -f "$requested_keys_file"' EXIT INT TERM

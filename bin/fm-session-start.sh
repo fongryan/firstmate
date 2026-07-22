@@ -143,41 +143,98 @@ section "SESSION START - $FM_HOME"
 
 # --- 1. lock -----------------------------------------------------------
 subsection "LOCK"
-# FM_SESSION_LOCK_KEYS lets the captain (or a fleet orchestrator) opt into
-# scoped-key acquisition at session start. Default is unset, in which case
-# fm-lock.sh acquires the full default key set and the legacy status line is
-# emitted. Explicit values like 'fleet,lifecycle' or 'queue' restrict the
-# session's footprint to exactly those keys, freeing other workers to run
-# concurrently on the disjoint keys without contention. The read-only banner
-# wording remains identical regardless of which key set was acquired.
-LOCK_ARGS=()
-if [ -n "${FM_SESSION_LOCK_KEYS:-}" ]; then
-  LOCK_ARGS=(--keys "$FM_SESSION_LOCK_KEYS")
-fi
-LOCK_OUT=$("$SCRIPT_DIR/fm-lock.sh" "${LOCK_ARGS[@]}" 2>&1)
-LOCK_RC=$?
-printf '%s\n' "$LOCK_OUT"
 READ_ONLY=0
-if [ "$LOCK_RC" -ne 0 ]; then
-  READ_ONLY=1
+CONTROL_PLANE_UNAVAILABLE=0
+SCOPED_SESSION=0
+SESSION_LOCK_MODE=${FM_SESSION_LOCK_MODE:-scoped}
+case "$SESSION_LOCK_MODE" in
+  scoped)
+    # Probe identity once, then release immediately. Every mutation below owns
+    # only its exact key for its actual duration, rather than turning a session
+    # start into a fleet-wide mutex.
+    LOCK_OUT=$("$SCRIPT_DIR/fm-lock.sh" --keys lifecycle 2>&1)
+    LOCK_RC=$?
+    if [ "$LOCK_RC" -eq 0 ]; then
+      "$SCRIPT_DIR/fm-lock.sh" release --keys lifecycle >/dev/null 2>&1 || true
+      SCOPED_SESSION=1
+      printf 'lock model: scoped per operation; no fleet-wide session lock retained\n'
+    elif [ "$LOCK_RC" -eq 3 ]; then
+      READ_ONLY=1
+      CONTROL_PLANE_UNAVAILABLE=1
+    else
+      SCOPED_SESSION=1
+      printf 'lock model: scoped per operation; lifecycle is currently contended and only that operation may skip\n'
+    fi
+    ;;
+  legacy)
+    if [ -n "${FM_SESSION_LOCK_KEYS:-}" ]; then
+      LOCK_OUT=$("$SCRIPT_DIR/fm-lock.sh" --keys "$FM_SESSION_LOCK_KEYS" 2>&1)
+    else
+      LOCK_OUT=$("$SCRIPT_DIR/fm-lock.sh" 2>&1)
+    fi
+    LOCK_RC=$?
+    [ "$LOCK_RC" -eq 0 ] || READ_ONLY=1
+    ;;
+  *)
+    LOCK_OUT="error: FM_SESSION_LOCK_MODE must be scoped or legacy (got $SESSION_LOCK_MODE)"
+    LOCK_RC=2
+    READ_ONLY=1
+    ;;
+esac
+printf '%s\n' "${LOCK_OUT:-}"
+if [ "$READ_ONLY" -eq 1 ]; then
   BAR='●━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━'
   {
     printf '%s\n' "$BAR"
-    printf '●  READ-ONLY SESSION - ANOTHER LIVE FIRSTMATE SESSION HOLDS THE FLEET LOCK\n'
+    if [ "$CONTROL_PLANE_UNAVAILABLE" -eq 1 ]; then
+      printf '●  FIRSTMATE CONTROL PLANE UNAVAILABLE FROM THIS HARNESS\n'
+    else
+      printf '●  READ-ONLY SESSION - ANOTHER LIVE FIRSTMATE SESSION HOLDS THE FLEET LOCK\n'
+    fi
     printf '●  %s\n' "$LOCK_OUT"
     printf '●  Skipping every mutating step: secondmate sync, X-mode artifacts,\n'
     printf '●  fleet sync, and wake-queue drain. Detect-only bootstrap diagnostics and\n'
     printf '●  the rest of this read-only-safe digest still ran below.\n'
-    printf '●  Operate read-only until this resolves - do not spawn, steer, merge, or\n'
-    printf '●  otherwise mutate fleet state from this session.\n'
+    if [ "$CONTROL_PLANE_UNAVAILABLE" -eq 1 ]; then
+      printf '●  Use direct repo workflow here, or start Firstmate from a terminal harness\n'
+      printf '●  with a session-specific owner for control-plane mutations.\n'
+    else
+      printf '●  Operate read-only until this resolves - do not spawn, steer, merge, or\n'
+      printf '●  otherwise mutate fleet state from this session.\n'
+    fi
     printf '%s\n' "$BAR"
   }
 fi
+
+run_scoped_operation() {
+  local key=$1 label=$2 lock_out lock_rc action_rc release_out
+  shift 2
+  lock_out=$("$SCRIPT_DIR/fm-lock.sh" --keys "$key" 2>&1)
+  lock_rc=$?
+  if [ "$lock_rc" -ne 0 ]; then
+    if [ "$lock_rc" -eq 3 ]; then
+      printf 'SCOPED_OPERATION: %s skipped: session-specific harness identity unavailable\n' "$label"
+    else
+      printf 'SCOPED_OPERATION: %s skipped: %s\n' "$label" "$lock_out"
+    fi
+    return 0
+  fi
+  "$@"
+  action_rc=$?
+  release_out=$("$SCRIPT_DIR/fm-lock.sh" release --keys "$key" 2>&1)
+  if [ $? -ne 0 ]; then
+    printf 'SCOPED_OPERATION: %s lock release failed: %s\n' "$label" "$release_out"
+    return 1
+  fi
+  return "$action_rc"
+}
 
 # --- 2. bootstrap --------------------------------------------------------
 subsection "BOOTSTRAP"
 if [ "$READ_ONLY" -eq 1 ]; then
   BOOT_OUT=$(FM_BOOTSTRAP_DETECT_ONLY=1 "$SCRIPT_DIR/fm-bootstrap.sh" 2>&1)
+elif [ "$SCOPED_SESSION" -eq 1 ]; then
+  BOOT_OUT=$(FM_BOOTSTRAP_SCOPED=1 "$SCRIPT_DIR/fm-bootstrap.sh" 2>&1)
 else
   BOOT_OUT=$("$SCRIPT_DIR/fm-bootstrap.sh" 2>&1)
 fi
@@ -199,11 +256,19 @@ subsection "WAKE QUEUE"
 if [ "$READ_ONLY" -eq 1 ]; then
   QLEN=0
   [ -s "$STATE/.wake-queue" ] && QLEN=$(grep -c . "$STATE/.wake-queue" 2>/dev/null || printf '0')
-  printf 'skipped (read-only session) - %s record(s) remain queued for the session holding the lock.\n' "$QLEN"
+  if [ "$CONTROL_PLANE_UNAVAILABLE" -eq 1 ]; then
+    printf 'skipped (control-plane owner unavailable) - %s record(s) remain queued for a terminal-harness Firstmate owner.\n' "$QLEN"
+  else
+    printf 'skipped (read-only session) - %s record(s) remain queued for the session holding the lock.\n' "$QLEN"
+  fi
   GUARD_OUT=$(FM_GUARD_READ_ONLY=1 "$SCRIPT_DIR/fm-guard.sh" 2>&1)
   [ -n "$GUARD_OUT" ] && printf '%s\n' "$GUARD_OUT"
 else
-  DRAIN_OUT=$("$SCRIPT_DIR/fm-wake-drain.sh" 2>&1)
+  if [ "$SCOPED_SESSION" -eq 1 ]; then
+    DRAIN_OUT=$(run_scoped_operation queue wake-queue "$SCRIPT_DIR/fm-wake-drain.sh" 2>&1)
+  else
+    DRAIN_OUT=$("$SCRIPT_DIR/fm-wake-drain.sh" 2>&1)
+  fi
   if [ -n "$DRAIN_OUT" ]; then
     printf '%s\n' "$DRAIN_OUT"
   else
@@ -220,6 +285,11 @@ subsection "LIFECYCLE RECOVERY"
 if [ "$READ_ONLY" -eq 1 ]; then
   printf 'lifecycle-import: skipped (read-only session)\n'
   FM_STATE_OVERRIDE="$STATE" "$SCRIPT_DIR/fm-lifecycle-reconcile.sh" 2>&1 || true
+elif [ "$SCOPED_SESSION" -eq 1 ]; then
+  run_scoped_operation lifecycle lifecycle-recovery bash -c '
+    FM_STATE_OVERRIDE="$1" "$2" 2>&1 || true
+    FM_STATE_OVERRIDE="$1" "$3" 2>&1 || true
+  ' _ "$STATE" "$SCRIPT_DIR/fm-lifecycle-import.sh" "$SCRIPT_DIR/fm-lifecycle-reconcile.sh"
 else
   FM_STATE_OVERRIDE="$STATE" "$SCRIPT_DIR/fm-lifecycle-import.sh" 2>&1 || true
   FM_STATE_OVERRIDE="$STATE" "$SCRIPT_DIR/fm-lifecycle-reconcile.sh" 2>&1 || true
@@ -325,12 +395,22 @@ fi
 # --- 6. closing reminder -----------------------------------------------
 section "NEXT STEP"
 if [ "$READ_ONLY" -eq 1 ]; then
-  cat <<'EOF'
+  if [ "$CONTROL_PLANE_UNAVAILABLE" -eq 1 ]; then
+    cat <<'EOF'
+This shared Desktop harness has no session-specific Firstmate owner. It may use
+the direct repository workflow; do not attempt captain-state mutations here.
+For queue, watcher, spawn, or merge control-plane work, start Firstmate from a
+terminal Claude/Codex/OpenCode harness that can own the scoped locks.
+
+EOF
+  else
+    cat <<'EOF'
 This session did not acquire the fleet lock. Stay read-only: do not arm,
 drain, spawn, steer, merge, or repair fleet state from here. The session
 holding the lock owns mutable follow-up.
 
 EOF
+  fi
 elif [ "$AFK_PRESENT" -eq 1 ]; then
   cat <<'EOF'
 Away mode is active. Follow the supervision operating instructions block above:

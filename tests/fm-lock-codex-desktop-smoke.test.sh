@@ -27,7 +27,7 @@ fi
 
 rc=0
 out=$(FM_HOME="$home" "$ROOT/bin/fm-lock.sh" 2>&1) || rc=$?
-[ "$rc" -ne 0 ] || fail "shared Codex Desktop app-server must not acquire a Firstmate lock"
-assert_contains "$out" "cannot locate harness process in ancestry" "Desktop app-server refusal was not explicit"
+[ "$rc" -eq 3 ] || fail "shared Codex Desktop app-server must return the dedicated identity-unavailable code (got $rc)"
+assert_contains "$out" "no session-specific Firstmate harness identity" "Desktop identity refusal was not explicit"
 assert_absent "$home/state/.lock" "shared Desktop app-server wrote a fleet lock"
-pass "real Codex Desktop app-server fails closed without a session-specific owner"
+pass "real Codex Desktop app-server reports unavailable session identity without writing a fleet lock"

@@ -96,9 +96,24 @@ make_fake_ps_harness() {
 #!/usr/bin/env bash
 set -u
 harness=${FM_FAKE_HARNESS:-claude}
+owner=${FM_TEST_OWNER_PID:-}
+holder=${FM_TEST_LIVE_HOLDER_PID:-}
+requested=""
+previous=""
+for argument in "$@"; do
+  if [ "$previous" = "-p" ]; then requested=$argument; break; fi
+  previous=$argument
+done
 case "$*" in
-  *"comm="*) printf '/usr/local/bin/%s\n' "$harness"; exit 0 ;;
-  *"args="*) printf '%s\n' "$harness"; exit 0 ;;
+  *"comm="*)
+    if [ "$requested" = "$owner" ] || [ "$requested" = "$holder" ]; then printf '/usr/local/bin/%s\n' "$harness"; else printf '/bin/bash\n'; fi
+    exit 0
+    ;;
+  *"args="*)
+    if [ "$requested" = "$owner" ] || [ "$requested" = "$holder" ]; then printf '%s\n' "$harness"; else printf 'bash\n'; fi
+    exit 0
+    ;;
+  *"ppid="*) printf '%s\n' "${owner:-1}"; exit 0 ;;
 esac
 exit 1
 SH
@@ -194,7 +209,7 @@ SH
 run_session_start() {
   local home=$1 root=$2 path=$3
   env -u CLAUDECODE -u PI_CODING_AGENT -u GROK_AGENT \
-    FM_HOME="$home" FM_ROOT_OVERRIDE="$root" PATH="$path" \
+    FM_HOME="$home" FM_ROOT_OVERRIDE="$root" FM_TEST_OWNER_PID="$$" PATH="$path" \
     "$SESSION_START"
 }
 
@@ -256,6 +271,9 @@ EOF
 
   out=$(run_session_start "$home" "$root" "$fakebin:$BASE_PATH")
 
+  [ ! -e "$home/state/.lock" ] || fail "default session start retained a fleet-wide legacy lock"
+  [ -z "$(ls -A "$home/state/.locks" 2>/dev/null)" ] || fail "default session start retained scoped locks after its mutations"
+
   assert_contains "$out" "data/projects.md" "digest did not label the projects.md section"
   assert_contains "$out" "- demo [no-mistakes] - a demo project (added 2026-07-01)" "digest did not print projects.md content"
 
@@ -306,7 +324,7 @@ EOF
   printf '%s\n' "$holder_pid" > "$home/state/.lock"
 
   status=0
-  out=$(run_session_start "$home" "$root" "$fakebin:$BASE_PATH") || status=$?
+  out=$(FM_SESSION_LOCK_MODE=legacy FM_TEST_LIVE_HOLDER_PID="$holder_pid" run_session_start "$home" "$root" "$fakebin:$BASE_PATH") || status=$?
   kill "$holder_pid" 2>/dev/null || true
   wait "$holder_pid" 2>/dev/null || true
 
@@ -344,6 +362,33 @@ EOF
     || fail "read-only session imported legacy metadata and mutated lifecycle state"
 
   pass "a lock refusal prints a loud read-only banner, skips every mutating step, and still completes the digest"
+}
+
+test_codex_desktop_identity_unavailable_is_not_reported_as_lock_contention() {
+  local rec root home fakebin out
+  rec=$(new_world desktop-identity)
+  IFS='|' read -r root home fakebin <<EOF
+$rec
+EOF
+  make_fake_toolchain "$fakebin"
+  cat > "$fakebin/ps" <<'SH'
+#!/usr/bin/env bash
+set -u
+case "$*" in
+  *"comm="*) printf '%s\n' '/Applications/ChatGPT.app/Contents/Resources/codex' ;;
+  *"args="*) printf '%s\n' 'codex -c features.code_mode_host=true app-server --analytics-default-enabled' ;;
+  *"ppid="*) printf '%s\n' '1' ;;
+  *) exit 1 ;;
+esac
+SH
+  chmod +x "$fakebin/ps"
+
+  out=$(run_session_start "$home" "$root" "$fakebin:$BASE_PATH")
+  assert_contains "$out" "FIRSTMATE CONTROL PLANE UNAVAILABLE" "Desktop identity mode was not named"
+  assert_contains "$out" "no session-specific Firstmate harness identity" "Desktop identity reason was not surfaced"
+  assert_not_contains "$out" "ANOTHER LIVE FIRSTMATE SESSION HOLDS THE FLEET LOCK" "Desktop identity was misreported as lock contention"
+  [ ! -e "$home/state/.lock" ] || fail "Desktop identity path wrote a legacy fleet lock"
+  pass "Codex Desktop identity unavailability is distinct from a live lock holder"
 }
 
 # --- output ordering ----------------------------------------------------------
@@ -747,8 +792,14 @@ EOF
   pass "session start rejects Pi loaded markers from previous sessions"
 }
 
+if [ -n "${FM_SESSION_START_TEST_ONLY:-}" ]; then
+  "$FM_SESSION_START_TEST_ONLY"
+  exit $?
+fi
+
 test_context_digest_absent_empty_present
 test_lock_refusal_read_only_path
+test_codex_desktop_identity_unavailable_is_not_reported_as_lock_contention
 test_output_ordering_diagnostics_lead
 test_herdr_backend_diagnostics_follow_real_session_start
 test_status_tail_bounding
