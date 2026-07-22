@@ -1,7 +1,10 @@
 # Codex App backend contract
 
-Status: blocked for Firstmate as a selectable shell backend.
-The Codex Desktop host-tool loop works, including status-file writes, but Firstmate does not yet have a supported shell-callable bridge to those host tools.
+Status: implemented as the selectable `codex-app` backend.
+
+Firstmate now owns Codex App task control through a local bridge over the
+bundled `codex app-server --stdio` protocol. It does not treat the shared
+Codex Desktop `app-server` PID as a session owner.
 
 This document replaces the earlier passive visible-thread ledger shape.
 A manual ledger is not a backend.
@@ -152,27 +155,45 @@ read_thread after archive:
 Result: a Desktop-owned Codex thread can write Firstmate status files when the prompt gives it the absolute status path and the Desktop permission context can write that checkout.
 The return channel is real at the Codex Desktop host-tool layer.
 
-## Codex Desktop API blocker
+## Bridge and durable ownership
 
 Firstmate's backend scripts are Bash entry points.
 They can call `tmux`, `herdr`, `zellij`, primitive Orca CLI surfaces, and `cmux` directly.
 The Codex Desktop host tools verified above are available to the Codex Desktop conversation, not to arbitrary Firstmate subprocesses.
 The missing piece is therefore a supported Codex Desktop transport that a Bash backend can call, not another Firstmate-local ledger.
 
-The available Codex CLI and app-server probes found useful pieces but not a supported visible-thread backend transport:
+The available Codex CLI app-server now provides the lifecycle transport this
+backend uses:
 
 - `codex app-server --stdio` exposes JSON-RPC methods such as `thread/start`, `turn/start`, `thread/read`, and `thread/archive`.
-- A one-shot stdio probe could create a thread record, and `thread/archive` worked through that same stdio process.
-- The managed daemon path was unavailable in this Desktop install.
-- A raw proxy attempt against the Desktop control socket did not accept plain JSON-RPC framing.
+- A first turn is mandatory: `thread/start` alone is not resumable across a
+  new app-server process; `thread/start` followed by `turn/start` creates the
+  durable rollout.
+- A fresh bridge process resumes a durable task with `thread/resume`, then
+  reads it with `thread/read` or archives it with `thread/archive`.
+- The standalone managed-daemon command is unavailable in the Desktop-bundled
+  installation, so Firstmate runs its own per-home bridge daemon instead.
 
-That is not enough to add `codex-app` to `FM_BACKEND_KNOWN` or `FM_BACKEND_SPAWN`.
-A Firstmate backend must be able to create a thread, start or continue turns, read live state while turns run, and archive/stop the same endpoint through a Codex Desktop-supported shell-callable API.
-Shipping a local ledger would only record intentions; it would not supervise the actual Desktop thread.
+`bin/fm-codex-app-bridge.mjs` maintains active RPC connections and exposes
+create, send, read/capture, existence, and archive operations to
+`bin/backends/codex-app.sh`. `fm-spawn.sh` records `backend=codex-app`, the
+durable `codex_app_thread_id`, and a random `codex_app_lease_token` in the
+task metadata. Mutable actions require that token.
 
-## Required Codex Desktop bridge
+Lease records live under `state/codex-app/leases/`. They have an expiry and
+are acquired atomically, so a competing controller cannot replace a live
+task's thread authority. This is intentionally separate from `fm-lock.sh`:
+the latter protects a Firstmate terminal session, while the former protects a
+Codex App task control plane. A bridge PID is only a recoverable transport
+detail; it is never the durable ownership identity.
 
-Firstmate should implement a Codex App adapter only after Codex Desktop exposes one of these supported interfaces:
+## Operational lifecycle
+
+For a new task, Firstmate creates the normal isolated Git worktree, starts a
+Codex thread in that worktree, and gives the thread an absolute status-file
+return path. `fm-send`, `fm-peek`, `fm-watch` readers, and `fm-teardown` route
+through the backend adapter. Teardown archives the exact thread using the
+task lease; it never kills a shared Desktop app-server.
 
 - A supported CLI wrapper around the Desktop host tools: create thread, send message, read transcript/state, archive thread.
 - A documented JSON-RPC or MCP transport that Firstmate can call from Bash with stable request/response framing.
@@ -201,11 +222,14 @@ status return channel:
   the thread must be able to append Firstmate status lines to state/<id>.status
 ```
 
-Once that bridge exists, the implementation should add a real `bin/backends/codex-app.sh`, persist `backend=codex-app` and `codex_app_thread_id=` in `state/<id>.meta`, and wire spawn/send/peek/watch/teardown through the same dispatcher paths used by the existing adapters.
+The native bridge creates local Codex app-server threads. These are not a
+claim that an arbitrary pre-existing visible Desktop conversation can be
+adopted: host-tool-only Desktop threads remain companion workflows unless
+their thread ID and a Firstmate lease were created through this backend.
 
 ## Rollout clause
 
-After a supported shell-callable Codex Desktop/OpenAI bridge exists, Firstmate should implement Codex App for ship and scout tasks first.
-Secondmate support remains out of scope until ship/scout supervision, status return, send/read, and archive/teardown are proven through the normal backend dispatcher.
-
-Until then, Codex App support remains a verified host-tool smoke plus this blocked backend contract, not a selectable backend.
+Codex App is enabled for ship and scout tasks. Secondmate support remains out
+of scope until a full secondmate lifecycle proof is added; `fm-spawn` should
+refuse a Codex App secondmate rather than silently inventing cross-home lease
+ownership.

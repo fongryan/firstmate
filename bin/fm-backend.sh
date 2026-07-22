@@ -65,9 +65,9 @@ FM_BACKEND_CONFIG_DIR="${FM_CONFIG_OVERRIDE:-$FM_HOME/config}"
 # spawn-capable; unlike tmux/herdr/zellij it is also the worktree provider.
 # cmux is EXPERIMENTAL and spawn-capable, session-provider-only like
 # herdr/zellij - verified against the real 0.64.17 binary (docs/cmux-backend.md).
-# codex-app remains deliberately absent; see docs/codex-app-backend.md.
-FM_BACKEND_KNOWN="tmux herdr zellij orca cmux"
-FM_BACKEND_SPAWN="tmux herdr zellij orca cmux"
+# codex-app owns durable Codex thread ids through its bridge/lease contract.
+FM_BACKEND_KNOWN="tmux herdr zellij orca cmux codex-app"
+FM_BACKEND_SPAWN="tmux herdr zellij orca cmux codex-app"
 
 # fm_backend_list_contains: whitespace-delimited membership without relying on
 # shell word splitting. fm-backend.sh is normally sourced by bash scripts, but
@@ -314,6 +314,7 @@ fm_backend_required_tools() {  # <backend>
     zellij) printf '%s' 'zellij jq' ;;
     cmux)   printf '%s' 'cmux jq' ;;
     orca)   printf '%s' 'orca' ;;
+    codex-app) printf '%s' 'node codex' ;;
     *) return 1 ;;
   esac
 }
@@ -456,6 +457,13 @@ fm_backend_source() {  # <name>
         _FM_BACKEND_CMUX_SOURCED=1
       fi
       ;;
+    codex-app)
+      if [ -z "${_FM_BACKEND_CODEX_APP_SOURCED:-}" ]; then
+        # shellcheck source=bin/backends/codex-app.sh
+        . "$FM_BACKEND_LIB_DIR/backends/codex-app.sh" || return 1
+        _FM_BACKEND_CODEX_APP_SOURCED=1
+      fi
+      ;;
   esac
 }
 
@@ -527,6 +535,7 @@ fm_backend_capture() {  # <backend> <target> <lines> [expected-label]
     zellij) fm_backend_zellij_capture "$@" ;;
     orca) fm_backend_orca_capture "$@" ;;
     cmux) fm_backend_cmux_capture "$@" ;;
+    codex-app) fm_backend_codex_app_capture "$@" ;;
     *) echo "error: no capture implementation for backend '$backend'" >&2; return 1 ;;
   esac
 }
@@ -542,6 +551,7 @@ fm_backend_send_key() {  # <backend> <target> <key> [expected-label]
     zellij) fm_backend_zellij_send_key "$@" ;;
     orca) fm_backend_orca_send_key "$@" ;;
     cmux) fm_backend_cmux_send_key "$@" ;;
+    codex-app) fm_backend_codex_app_send_key "$@" ;;
     *) echo "error: no send-key implementation for backend '$backend'" >&2; return 1 ;;
   esac
 }
@@ -559,6 +569,7 @@ fm_backend_send_text_submit() {  # <backend> <target> <text> <retries> <enter-sl
     zellij) fm_backend_zellij_send_text_submit "$@" ;;
     orca) fm_backend_orca_send_text_submit "$@" ;;
     cmux) fm_backend_cmux_send_text_submit "$@" ;;
+    codex-app) fm_backend_codex_app_send_text_submit "$@" ;;
     *) echo "error: no send-text implementation for backend '$backend'" >&2; return 1 ;;
   esac
 }
@@ -576,6 +587,7 @@ fm_backend_kill() {  # <backend> <target>
     zellij) fm_backend_zellij_kill "$@" ;;
     orca) fm_backend_orca_kill "$@" ;;
     cmux) fm_backend_cmux_kill "$@" ;;
+    codex-app) fm_backend_codex_app_kill "$@" ;;
     *) echo "error: no kill implementation for backend '$backend'" >&2; return 1 ;;
   esac
 }
@@ -686,6 +698,10 @@ fm_backend_target_exists() {  # <backend> <target> [expected-label]
     cmux)
       fm_backend_source cmux || return 1
       fm_backend_cmux_target_ready "$target" "$expected_label"
+      ;;
+    codex-app)
+      fm_backend_source codex-app || return 1
+      fm_backend_codex_app_target_exists "$target"
       ;;
     *)
       return 1

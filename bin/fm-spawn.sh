@@ -187,6 +187,10 @@ if [ "$BACKEND" = cmux ] && [ "$KIND" = secondmate ]; then
   echo "error: backend=cmux does not support --secondmate spawns yet" >&2
   exit 1
 fi
+if [ "$BACKEND" = codex-app ] && [ "$KIND" = secondmate ]; then
+  echo "error: backend=codex-app does not support --secondmate spawns yet" >&2
+  exit 1
+fi
 if [ "$BACKEND" = orca ]; then
   fm_backend_orca_runtime_check || exit 1
 fi
@@ -909,6 +913,29 @@ EOF
     fi
     T="$ORCA_TERMINAL"
     ;;
+  codex-app)
+    # Codex App is not a terminal. The bridge starts a durable Codex thread
+    # directly in the isolated worktree and returns immediately after the
+    # initial turn is accepted; its lease, not any app-server PID, is recorded
+    # in task metadata below.
+    CODEX_APP_PROMPT=$(cat <<EOF
+You are Firstmate task $ID. Work only in $TASK_CWD.
+Read and execute the task brief at $BRIEF.
+Before substantive work, append exactly this line to $STATE/$ID.status:
+working: Codex App thread started
+When you reach a terminal outcome, append a concise done: or blocked: line to that same absolute status file.
+Do not use terminal-session assumptions; report progress through that status file.
+EOF
+)
+    CODEX_APP_RAW=$(fm_backend_codex_app_create "$ID" "$TASK_CWD" "$CODEX_APP_PROMPT" "$STATE/$ID.status") || exit 1
+    CODEX_APP_THREAD_ID=${CODEX_APP_RAW%%$'\t'*}
+    CODEX_APP_LEASE_TOKEN=${CODEX_APP_RAW#*$'\t'}
+    if [ -z "$CODEX_APP_THREAD_ID" ] || [ "$CODEX_APP_LEASE_TOKEN" = "$CODEX_APP_RAW" ]; then
+      echo "error: Codex App bridge did not return a thread id and lease token" >&2
+      exit 1
+    fi
+    T="$CODEX_APP_THREAD_ID"
+    ;;
 esac
 # #134 robustness: only tmux needs a stable target distinct from $T; all other
 # backends address their pane/surface by the id already in $T.
@@ -1115,6 +1142,10 @@ META_WINDOW=$T
     echo "cmux_workspace_id=$CMUX_WORKSPACE_ID"
     echo "cmux_surface_id=$CMUX_SURFACE_ID"
   fi
+  if [ "$BACKEND" = codex-app ]; then
+    echo "codex_app_thread_id=$CODEX_APP_THREAD_ID"
+    echo "codex_app_lease_token=$CODEX_APP_LEASE_TOKEN"
+  fi
   if [ "$KIND" = secondmate ]; then
     echo "home=$PROJ_ABS"
     echo "projects=$SECONDMATE_PROJECTS"
@@ -1134,6 +1165,11 @@ FM_STATE_OVERRIDE="$STATE" FM_LIFECYCLE_RESTORE=1 \
   --worktree "$WT" --objective "$OBJECTIVE" >/dev/null
 SPAWN_WORKTREE_CLEANUP_PENDING=0
 trap - EXIT
+
+if [ "$BACKEND" = codex-app ]; then
+  echo "spawned $ID harness=$HARNESS kind=$KIND mode=$MODE yolo=$YOLO window=$META_WINDOW worktree=$WT"
+  exit 0
+fi
 
 sq_brief=$(shell_quote "$BRIEF")
 sq_turnend=$(shell_quote "$TURNEND")
